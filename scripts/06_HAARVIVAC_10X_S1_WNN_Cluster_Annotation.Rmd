@@ -19,8 +19,6 @@ The goal of this analysis is to annotate the Spike 1 WNN-derived clusters.
 
 What lineage-defining TFs/cytokines/chemokines are differentially expressed among the WNN clusters? 
 
-What cells are expressing Tfh gene signatures?
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -52,13 +50,6 @@ if(save_output) {
 } else {
   s1 <- readRDS(file = here::here("processed_data/20220413_s1_tcells_with_wnn_names.rds"))
 }
-
-tf_list <- read.delim("http://humantfs.ccbr.utoronto.ca/download/v_1.01/TF_names_v_1.01.txt")
-tf_list <- tf_list %>%
-  rename(Gene = AC008770.3) %>%
-  add_row(Gene = "AC008770.3") 
-
-cytokine_list <- read_excel(here::here("data/Al-Yahya_JVirol_2015_TableS1.xlsx"), sheet = 1, skip = 1)
 
 genes4heatmap <- read.csv(here::here("data/Genes4HeatMap - Fig3HeatMap.csv"))
 
@@ -128,7 +119,6 @@ fxn_plot <- VlnPlot(s1, assay = "ADT_bc", features = fxn_adt_feat, pt.size = 0.5
 
 if(save_output) {
   cairo_pdf(file=here::here("out/20220331_S1_WNN_ADT_Violin_Plots.pdf"), width=12, height=10, onefile = TRUE)
-
   print(lin_plot)
   print(lin2_plot)
   print(lin3_plot)
@@ -136,7 +126,6 @@ if(save_output) {
   print(mem_plot)
   print(ck_plot)
   print(fxn_plot)
-
   dev.off()
 }
 ```
@@ -170,25 +159,9 @@ if(rerun_de) {
 s1_signif_markers <- s1_markers %>%
   dplyr::filter(p_val_adj < 0.05)
 
-# Query DEGs against TF list 
-s1_signif_tfs <- s1_signif_markers %>%
-  dplyr::filter(gene %in% tf_list$Gene) 
-
-s1_tfs <- s1_markers %>%
-  dplyr::filter(gene %in% tf_list$Gene)
-
-# Query DEGs against cytokine list
-s1_signif_cytokines <- s1_signif_markers %>%
-  dplyr::filter(gene %in% cytokine_list$Symbol) 
-
-s1_cytokines <- s1_markers %>%
-  dplyr::filter(gene %in% cytokine_list$Symbol)
-
 if(save_output) {
   saveRDS(s1_markers, here::here("out/20220331_S1_all_DE_genes.rds"))
   write.csv(s1_markers, here::here("out/20220331_S1_all_DE_genes.csv"), row.names = FALSE)
-  saveRDS(s1_tfs, here::here("out/20220331_S1_DE_TFs.rds"))
-  saveRDS(s1_cytokines, here::here("out/20220331_S1_DE_cytokines.rds"))
 }
 
 # Grab the top 5

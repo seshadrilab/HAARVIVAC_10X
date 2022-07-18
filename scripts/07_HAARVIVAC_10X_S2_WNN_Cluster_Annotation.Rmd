@@ -52,13 +52,6 @@ if(save_output) {
   s2 <- readRDS(file = here::here("processed_data/20220413_s2_tcells_with_wnn_names.rds"))
 }
 
-tf_list <- read.delim("http://humantfs.ccbr.utoronto.ca/download/v_1.01/TF_names_v_1.01.txt")
-tf_list <- tf_list %>%
-  rename(Gene = AC008770.3) %>%
-  add_row(Gene = "AC008770.3")
-
-cytokine_list <- read_excel(here::here("data/Al-Yahya_JVirol_2015_TableS1.xlsx"), sheet = 1, skip = 1)
-
 genes4heatmap <- read.csv(here::here("data/Genes4HeatMap - Fig3HeatMap.csv"))
 
 if(!dir.exists(here::here("out/annotation_plots"))) {
@@ -115,17 +108,8 @@ fxn_plot <- VlnPlot(s2, assay = "ADT_bc", features = fxn_adt_feat, pt.size = 0.5
   plot_annotation(title = "Spike 2") & 
   theme(plot.title = element_text(hjust = 0.5))
 
-lin_plot
-lin2_plot
-lin3_plot
-act_plot
-mem_plot
-ck_plot
-fxn_plot
-
 if(save_output) {
   cairo_pdf(file=here::here("out/20220331_S2_WNN_ADT_Violin_Plots.pdf"), width=12, height=10, onefile = TRUE)
-
   print(lin_plot)
   print(lin2_plot)
   print(lin3_plot)
@@ -133,7 +117,6 @@ if(save_output) {
   print(mem_plot)
   print(ck_plot)
   print(fxn_plot)
-
   dev.off()
 }
 ```
@@ -165,25 +148,9 @@ if(rerun_de) {
 s2_signif_markers <- s2_markers %>%
   dplyr::filter(p_val_adj < 0.05)
 
-# Query DEGs against TF list 
-s2_signif_tfs <- s2_signif_markers %>%
-  dplyr::filter(gene %in% tf_list$Gene) 
-
-s2_tfs <- s2_markers %>%
-  dplyr::filter(gene %in% tf_list$Gene)
-
-# Query DEGs against cytokine list
-s2_signif_cytokines <- s2_signif_markers %>%
-  dplyr::filter(gene %in% cytokine_list$Symbol) 
-
-s2_cytokines <- s2_markers %>%
-  dplyr::filter(gene %in% cytokine_list$Symbol)
-
 if(save_output){
   saveRDS(s2_markers, here::here("out/20220331_S2_all_DE_genes.rds"))
   write.csv(s2_markers, here::here("out/20220331_S2_all_DE_genes.csv"), row.names = FALSE)
-  saveRDS(s2_tfs, here::here("out/20220331_S2_DE_TFs.rds"))
-  saveRDS(s2_cytokines, here::here("out/20220331_S2_DE_cytokines.rds"))
 }
 
 s2_markers <- readRDS(here::here("out/20220331_S2_all_DE_genes.rds"))
