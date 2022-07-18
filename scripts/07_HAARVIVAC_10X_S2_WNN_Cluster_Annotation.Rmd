@@ -1,0 +1,408 @@
+---
+title: "HAARVIVAC 10X S2 WNN Cluster Annotation"
+author: "Jolie Phan"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+date: "version `r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+The goal of this analysis is to annotate the Spike 2 WNN-derived clusters.
+
+What lineage-defining TFs/cytokines/chemokines are differentially expressed among the WNN clusters? 
+
+What cells are expressing Tfh gene signatures?
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(readxl)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(ggbeeswarm)
+library(patchwork)
+library(aplot)
+library(ComplexHeatmap)
+library(RColorBrewer)
+```
+
+# Load data
+
+```{r}
+rerun_de <- FALSE
+save_output <- TRUE
+rescale <- TRUE
+
+if(save_output) {
+  s2 <- readRDS(file = here::here("processed_data/20220323_s2_tcells_with_wnn.rds"))
+} else {
+  s2 <- readRDS(file = here::here("processed_data/20220413_s2_tcells_with_wnn_names.rds"))
+}
+
+tf_list <- read.delim("http://humantfs.ccbr.utoronto.ca/download/v_1.01/TF_names_v_1.01.txt")
+tf_list <- tf_list %>%
+  rename(Gene = AC008770.3) %>%
+  add_row(Gene = "AC008770.3")
+
+cytokine_list <- read_excel(here::here("data/Al-Yahya_JVirol_2015_TableS1.xlsx"), sheet = 1, skip = 1)
+
+genes4heatmap <- read.csv(here::here("data/Genes4HeatMap - Fig3HeatMap.csv"))
+
+if(!dir.exists(here::here("out/annotation_plots"))) {
+    cat(sprintf("Creating folder %s\n", here::here("out/annotation_plots")))
+    dir.create(here::here("out/annotation_plots"), recursive = T)
+}
+
+if(!dir.exists(here::here("out/UMAP"))) {
+    cat(sprintf("Creating folder %s\n", here::here("out/UMAP")))
+    dir.create(here::here("out/UMAP"), recursive = T)
+}
+```
+
+# Unnamed ADT violin plots
+
+```{r}
+lin_adt_feat <- c("CD3", "CD4", "CD8a", "GD", "TRAV1-2")
+lin2_adt_feat <- c("CD14", "CD56", "CD19", "CD123", "CD15", "CD20", "CD163")
+lin3_adt_feat <- c("CD16", "CD103", "CD161", "CD169", "CD11b", "CD11c")
+act_adt_feat <- c("CD95", "CD25", "CD38", "CD26", "HLA-DR")
+mem_adt_feat <- c("CD62L", "CD127", "CCR7", "CD45RA", "CD28")
+ck_adt_feat <- c("CXCR3", "CXCR5", "CCR4", "CCR5", "CCR6")
+fxn_adt_feat <- c("PD-L1", "CD86")
+```
+
+```{r, fig.width=12, fig.height=10}
+Idents(s2) <- "wsnn_res.1"
+
+lin_plot <- VlnPlot(s2, assay = "ADT_bc", features = lin_adt_feat, pt.size = 0.5) +
+  plot_annotation(title = "Spike 2") & 
+  theme(plot.title = element_text(hjust = 0.5))
+
+lin2_plot <- VlnPlot(s2, assay = "ADT_bc", features = lin2_adt_feat, pt.size = 0.5) +
+  plot_annotation(title = "Spike 2") & 
+  theme(plot.title = element_text(hjust = 0.5))
+
+lin3_plot <- VlnPlot(s2, assay = "ADT_bc", features = lin3_adt_feat, pt.size = 0.5) +
+  plot_annotation(title = "Spike 2") & 
+  theme(plot.title = element_text(hjust = 0.5))
+
+act_plot <- VlnPlot(s2, assay = "ADT_bc", features = act_adt_feat, pt.size = 0.5) +
+  plot_annotation(title = "Spike 2") & 
+  theme(plot.title = element_text(hjust = 0.5))
+
+mem_plot <- VlnPlot(s2, assay = "ADT_bc", features = mem_adt_feat, pt.size = 0.5) +
+  plot_annotation(title = "Spike 2") & 
+  theme(plot.title = element_text(hjust = 0.5))
+
+ck_plot <- VlnPlot(s2, assay = "ADT_bc", features = ck_adt_feat, pt.size = 0.5) +
+  plot_annotation(title = "Spike 2") & 
+  theme(plot.title = element_text(hjust = 0.5))
+
+fxn_plot <- VlnPlot(s2, assay = "ADT_bc", features = fxn_adt_feat, pt.size = 0.5) +
+  plot_annotation(title = "Spike 2") & 
+  theme(plot.title = element_text(hjust = 0.5))
+
+lin_plot
+lin2_plot
+lin3_plot
+act_plot
+mem_plot
+ck_plot
+fxn_plot
+
+if(save_output) {
+  cairo_pdf(file=here::here("out/20220331_S2_WNN_ADT_Violin_Plots.pdf"), width=12, height=10, onefile = TRUE)
+
+  print(lin_plot)
+  print(lin2_plot)
+  print(lin3_plot)
+  print(act_plot)
+  print(mem_plot)
+  print(ck_plot)
+  print(fxn_plot)
+
+  dev.off()
+}
+```
+
+# Unnamed ADT dot plots
+
+```{r}
+Idents(s2) <- "wsnn_res.1"
+adt_markers <- c("CD3", "CD4", "CD8a", "GD", "TRAV1-2", "CD56", "CD95", "CD62L", "CD127", "CCR7", "CD45RA", "CXCR3", "CXCR5", "CCR4", "CCR5", "CCR6", "CD28", "CD86", "CD103", "CD25", "CD38", "CD26", "HLA-DR", "PD-L1", "CD161", "CD14", "CD123", "CD15", "CD163", "CD16", "CD11b", "CD11c", "CD169", "CD19", "CD20")
+s2_dotplot <- DotPlot(s2, features = adt_markers, assay ="ADT_bc") +
+  RotatedAxis() +
+  ggtitle("Spike 2 Bg-corr ADT Expression") +
+  theme(plot.title = element_text(hjust = 0.5))
+        #axis.text.y = element_blank()) 
+```
+
+# DE Testing 
+
+```{r}
+DefaultAssay(s2) <- "RNA"
+Idents(s2) <- "wsnn_res.1"
+
+if(rerun_de) {
+  s2_markers <- FindAllMarkers(s1, only.pos = TRUE)
+} else {
+  s2_markers <- readRDS(here::here("out/20220331_S2_all_DE_genes.rds"))
+}
+
+s2_signif_markers <- s2_markers %>%
+  dplyr::filter(p_val_adj < 0.05)
+
+# Query DEGs against TF list 
+s2_signif_tfs <- s2_signif_markers %>%
+  dplyr::filter(gene %in% tf_list$Gene) 
+
+s2_tfs <- s2_markers %>%
+  dplyr::filter(gene %in% tf_list$Gene)
+
+# Query DEGs against cytokine list
+s2_signif_cytokines <- s2_signif_markers %>%
+  dplyr::filter(gene %in% cytokine_list$Symbol) 
+
+s2_cytokines <- s2_markers %>%
+  dplyr::filter(gene %in% cytokine_list$Symbol)
+
+if(save_output){
+  saveRDS(s2_markers, here::here("out/20220331_S2_all_DE_genes.rds"))
+  write.csv(s2_markers, here::here("out/20220331_S2_all_DE_genes.csv"), row.names = FALSE)
+  saveRDS(s2_tfs, here::here("out/20220331_S2_DE_TFs.rds"))
+  saveRDS(s2_cytokines, here::here("out/20220331_S2_DE_cytokines.rds"))
+}
+
+s2_markers <- readRDS(here::here("out/20220331_S2_all_DE_genes.rds"))
+
+# Grab the top 5
+s2_markers %>%
+    group_by(cluster) %>%
+    top_n(n = 5, wt = avg_log2FC) -> s2_top5
+```
+
+# Unnamed GEX heat maps
+
+```{r, fig.width=10, fig.height=9}
+Idents(s2) <- "wsnn_res.1"
+
+DoHeatmap(s2, features = s2_top5$gene, assay ="RNA", size = 4) +
+  guides(color = FALSE) +
+  ggtitle("Spike 2 Top 5 DEGs per WNN Cluster") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+# Assign cell type names
+
+```{r}
+Idents(s2) <- "wsnn_res.1"
+
+# Assign names to clusters
+new_cluster_ids <- c("TREG IL32 CD4", "Activated Cytotoxic CD4", "Activated Th1 CD4", "CCR6+CCR4+ CD4", "CCR6-CCR4- CXCR4+ CD4", "CCR6+ IFIT+ CD4", "Naive-like CD4", "Activated Cytotoxic CD8", "MAIT CD8", "TEMRA Cytotoxic CD8", "TRM CD4", "Unassigned", "Naive-like CD8")
+names(new_cluster_ids) <- levels(s2)
+s2 <- RenameIdents(s2, new_cluster_ids)
+s2[["wnn_clusters"]] <- Idents(s2)
+```
+
+# Named ADT dot plots
+
+```{r out.extra='style="max-width:none; width:100vw; margin-left:calc(50% - 50vw);"', fig.width = 13, fig.height = 5.75}
+Idents(s2) <- "wnn_clusters"
+
+# List markers to include for plotting
+adt_subset <- c("CD3", "CD4", "CD8a", "GD", "TRAV1-2", "CD56")
+adt_mem <- c("CD95", "CD62L", "CD127", "CCR7", "CD45RA")
+adt_homing <- c("CXCR3", "CXCR5", "CCR4", "CCR5", "CCR6")
+adt_act <- c("CD28", "CD86", "CD103", "CD25", "CD38", "CD26", "HLA-DR", "PD-L1", "CD161", "CD11b", "CD11c")
+adt_tcell_markers <- c(adt_subset, adt_mem, adt_homing, adt_act)
+
+# Make a Seurat dot plot just to easily pull the necessary data
+s2_dotplot_named <- DotPlot(s2, features = adt_tcell_markers, assay ="ADT_bc") + 
+  RotatedAxis() +
+  ggtitle("Spike 2 Bg-corr ADT Expression") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Pull the necessary data from the Seurat-generated dotplot 
+s2_dotplot_data <- s2_dotplot_named$data
+
+markers <- s2_dotplot_data$features.plot %>%
+  unique()
+
+# Add ADT categories to data
+s2_dotplot_data <- s2_dotplot_data %>%
+  mutate(category = case_when(features.plot %in% adt_subset ~ "T Cell Subset",
+                              features.plot %in% adt_mem ~ "Memory",
+                              features.plot %in% adt_homing ~ "Homing",
+                              features.plot %in% adt_act ~ "Activation"))
+adt_cat_names <- c("T Cell Subset", "Memory", "Homing", "Activation")
+s2_dotplot_data$category <- factor(s2_dotplot_data$category, levels = adt_cat_names)
+
+# Add cluster numbers to cluster names
+s2_dotplot_data <- s2_dotplot_data %>%
+  mutate(clust = case_when(id == "TREG IL32 CD4" ~ "0: TREG IL32 CD4",
+                           id == "Activated Cytotoxic CD4" ~ "1: Activated Cytotoxic CD4",
+                           id == "Activated Th1 CD4" ~ "2: Activated Th1 CD4",
+                           id == "CCR6+CCR4+ CD4" ~ "3: CCR6+CCR4+ CD4",
+                           id == "CCR6-CCR4- CXCR4+ CD4" ~ "4: CCR6-CCR4- CXCR4+ CD4",
+                           id == "CCR6+ IFIT+ CD4" ~ "5: CCR6+ IFIT+ CD4",
+                           id == "Naive-like CD4" ~ "6: Naive-like CD4",
+                           id == "Activated Cytotoxic CD8" ~ "7: Activated Cytotoxic CD8",
+                           id == "MAIT CD8" ~ "8: MAIT CD8",
+                           id == "TEMRA Cytotoxic CD8" ~ "9: TEMRA Cytotoxic CD8",
+                           id == "TRM CD4" ~ "10: TRM CD4",
+                           id == "Unassigned" ~ "11: Unassigned",
+                           id == "Naive-like CD8" ~ "12: Naive-like CD8"))
+s2_dotplot_data$clust <- factor(s2_dotplot_data$clust, levels = c("0: TREG IL32 CD4", 
+                                                                  "1: Activated Cytotoxic CD4", 
+                                                                  "2: Activated Th1 CD4", 
+                                                                  "3: CCR6+CCR4+ CD4", 
+                                                                  "4: CCR6-CCR4- CXCR4+ CD4", 
+                                                                  "5: CCR6+ IFIT+ CD4", 
+                                                                  "6: Naive-like CD4", 
+                                                                  "7: Activated Cytotoxic CD8",
+                                                                  "8: MAIT CD8",
+                                                                  "9: TEMRA Cytotoxic CD8", 
+                                                                  "10: TRM CD4",
+                                                                  "11: Unassigned", 
+                                                                  "12: Naive-like CD8"))
+
+# Create dotplot
+s2_fancy_dotplot <- s2_dotplot_data %>% 
+  dplyr::filter(features.plot %in% markers) %>%
+  dplyr::filter(pct.exp > 0) %>% # drop marker-clusters with 0 % cells expressing any amount of the marker
+  ggplot(aes(x = reorder(clust, desc(clust)), y = features.plot, color = avg.exp.scaled, size = pct.exp)) +
+  facet_grid(. ~ category, space = "free_x", scales = "free_x", switch = "x") +
+  geom_point() +
+  coord_flip() +
+  scale_color_gradient2(low = "#196293", mid = "white", high = "#9D1213") +
+  theme_bw() +
+  theme(axis.line = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(), 
+        axis.text.x = element_text(color = "black", size = 7, angle = 90, hjust = 1, vjust = 0.5),
+        axis.text.y = element_text(color = "black", size = 7),
+        plot.title = element_text(hjust = 0.5, size = 12),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 7),
+        strip.placement = "outside",
+        strip.background = element_rect(fill = NA, color = "black"),
+        strip.text = element_text(size = 7), 
+        panel.spacing.x = unit(0, "cm"),
+        panel.border = element_blank(),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        legend.position="bottom",
+        panel.grid = element_blank()) +
+  labs(title = "S2",
+       color = "Average Expression ",
+       size = "Percent Expressed") +
+  guides(color = guide_colorbar(order = 1),
+         size = guide_legend(order = 0))
+  
+s2_fancy_dotplot
+```
+
+# Named GEX heat maps
+
+```{r echo=FALSE, fig.height=2.7, fig.width=7}
+Idents(s2) <- "wsnn_res.1"
+DefaultAssay(s2) <- "RNA"
+
+# Rescale RNA data to include all genes in heat map
+if(rescale) {
+  s2 <- ScaleData(object = s2, vars.to.regress = "percent.mt", features = rownames(s2), block.size = 2000)
+}
+
+# Find average expression
+s2_avg <- AverageExpression(s2, return.seurat = TRUE, assays = "RNA", slot = "scale.data")
+
+# Grab data for plotting
+mat <- s2_avg[["RNA"]]@scale.data[genes4heatmap$Gene,] %>%
+  as.matrix() %>%
+  t()
+
+# cluster_anno <- s1_avg@active.ident
+col_fun <- circlize::colorRamp2(c(-2, 0, 2), c("#196293", "white", "#9D1213"))
+
+# Plot heat map
+s2_heatmap <- Heatmap(mat, name = "Average Expression",
+                      cluster_columns = FALSE,
+                      cluster_rows = FALSE,
+                      show_column_dend = FALSE,
+                      show_row_dend = FALSE,
+                      row_names_side = "left",
+                      column_names_gp = grid::gpar(fontsize = 8),
+                      row_names_gp = grid::gpar(fontsize = 8),
+                      column_title = "S2",
+                      col = col_fun
+                      )
+
+s2_heatmap
+```
+
+# UMAP
+
+```{r, fig.height=3, fig.width=4}
+Idents(s2) <- "wsnn_res.1"
+
+num_cols <- 13
+umap_colors <- colorRampPalette(brewer.pal(8, "Set2"))(num_cols)
+
+s2_umap <- DimPlot(s2, reduction = "wnn.umap", label = TRUE, repel = TRUE, label.size = 3, pt.size = 0.3, cols = umap_colors) + 
+  ggtitle("S2") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, face = "plain", hjust = 0.5),
+        axis.text.x = element_text(size = 8, color = "black"),
+        axis.text.y = element_text(size = 8, color = "black"),
+        axis.title.x = element_text(size = 8),
+        axis.title.y = element_text(size = 8),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        axis.line = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "none") 
+s2_umap
+```
+
+# Save Seurat Object
+
+```{r}
+if(save_output) {
+  saveRDS(s2, file = here::here("processed_data/20220413_s2_tcells_with_wnn_names.rds"))
+}
+```
+
+# Save plots
+
+```{r}
+if(save_output) {
+  cairo_pdf(file=here::here("out/annotation_plots/S2_GEX_heatmap.pdf"), width=5.6, height=2.3,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(s2_heatmap)
+  dev.off()
+  
+  cairo_pdf(file=here::here("out/annotation_plots/S2_ADT_dotplot.pdf"), width=8.1, height=4.75,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(s2_fancy_dotplot)
+  dev.off()
+  
+  cairo_pdf(file=here::here("out/UMAP/S2_WNN_UMAP.pdf"), width=3, height=3,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(s2_umap)
+  dev.off()
+}
+```

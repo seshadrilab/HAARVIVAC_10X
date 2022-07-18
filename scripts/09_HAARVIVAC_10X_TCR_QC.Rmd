@@ -1,0 +1,442 @@
+---
+title: "HAARVIVAC 10X TCR QC"
+author: "Jolie Phan"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+date: "version `r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+Generate a QC'ed CSV file of the filtered contig annotations.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries 
+
+```{r, message = FALSE}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+```
+
+# Load data
+FYI: filtered_contig_annotations contains all the contigs where is_cell = TRUE, high_confidence = TRUE, full_length = TRUE, and productive = TRUE.
+
+```{r}
+save_output <- FALSE
+
+s1 <- readRDS(file = here::here("processed_data/20220323_s1_tcells_only.rds"))
+s2 <- readRDS(file = here::here("processed_data/20220323_s2_tcells_only.rds"))
+
+s1_tcr <- read.csv(here::here("data/S1/vdj_t/filtered_contig_annotations.csv"))
+s2_tcr <- read.csv(here::here("data/S2/vdj_t/filtered_contig_annotations.csv"))
+
+if(!dir.exists(here::here("processed_data/TCR"))) {
+  cat(sprintf("Creating folder %s\n", here::here("processed_data/TCR")))
+  dir.create(here::here("processed_data/TCR"), recursive = T)
+}
+```
+
+```{r}
+# Arial font setup. Downloaded afms from https://github.com/microsoft/microsoft-r-open/tree/ec3fd89e5fb5794bd8149905c134ad801bb61800
+Arial <- Type1Font(family = "Arial",
+                   metrics = c(here::here("data/Arial_afm/ArialMT.afm"),
+                               here::here("data/Arial_afm/ArialMT-Bold.afm"),
+                               here::here("data/Arial_afm/ArialMT-Italic.afm"),
+                               here::here("data/Arial_afm/ArialMT-BoldItalic.afm")))
+windowsFonts("Arial" = windowsFont("Arial"))
+pdfFonts(Arial = Arial)
+```
+
+# Clean up data
+
+Get the cell barcodes and metadata of cells that passed RNA and ADT QC in Seurat workflow.
+
+```{r}
+s1_barcodes <- s1@meta.data %>%
+  select(Group, PTID) %>%
+  tibble::rownames_to_column("barcode") # 4274 unique barcodes
+
+s2_barcodes <- s2@meta.data %>%
+  select(Group, PTID) %>%
+  tibble::rownames_to_column("barcode") # 3420 unique barcodes
+```
+
+How many unique cell barcodes are there in the TCR data to start with?
+
+```{r}
+s1_tcr_barcode_count <- length(unique(s1_tcr$barcode)) 
+s1_tcr_barcode_count
+
+s2_tcr_barcode_count <- length(unique(s2_tcr$barcode)) 
+s2_tcr_barcode_count
+```
+
+Subset the contigs to only keep the QC'd barcodes.
+
+```{r}
+s1_tcr_qc <- inner_join(s1_tcr, s1_barcodes, by = "barcode")
+s1_qc_tcr_barcode_count <- length(unique(s1_tcr_qc$barcode)) 
+s1_qc_tcr_barcode_count
+
+s2_tcr_qc <- inner_join(s2_tcr, s2_barcodes, by = "barcode")
+s2_qc_tcr_barcode_count <- length(unique(s2_tcr_qc$barcode)) 
+s2_qc_tcr_barcode_count
+```
+
+Drop barcodes that just have a single alpha chain and no beta chain(s). 
+
+```{r}
+s1_single_alphas <- s1_tcr_qc %>%
+  group_by(barcode) %>%
+  filter(n() == 1) %>%
+  filter(chain == "TRA") 
+
+s1_tcr_qc <- s1_tcr_qc %>%
+  anti_join(s1_single_alphas, by = "barcode")
+
+s1_qc_tcr_barcode_count_single_alpha <- length(unique(s1_tcr_qc$barcode))
+
+s2_single_alphas <- s2_tcr_qc %>%
+  group_by(barcode) %>%
+  filter(n() == 1) %>%
+  filter(chain == "TRA") 
+
+s2_tcr_qc <- s2_tcr_qc %>%
+  anti_join(s2_single_alphas, by = "barcode")
+
+s2_qc_tcr_barcode_count_single_alpha <- length(unique(s2_tcr_qc$barcode)) 
+```
+
+Drop barcodes that have 4+ contigs.
+
+```{r}
+s1_tcr_qc <- s1_tcr_qc[s1_tcr_qc$barcode %in% names(which(table(s1_tcr_qc$barcode) <4)),]
+s1_qc_tcr_barcode_count_multi <- length(unique(s1_tcr_qc$barcode)) 
+
+s2_tcr_qc <- s2_tcr_qc[s2_tcr_qc$barcode %in% names(which(table(s2_tcr_qc$barcode) <4)),]
+s2_qc_tcr_barcode_count_multi <- length(unique(s2_tcr_qc$barcode))
+```
+
+How many barcodes have 2 alpha chains?
+
+```{r}
+s1_two_alphas <- s1_tcr_qc %>%
+  filter(chain == "TRA") %>%
+  group_by(barcode) %>%
+  filter(n() == 2) 
+
+s1_qc_tcr_barcode_count_alpha <- length(unique(s1_two_alphas$barcode))
+s1_qc_tcr_barcode_count_alpha
+
+s2_two_alphas <- s2_tcr_qc %>%
+  filter(chain == "TRA") %>%
+  group_by(barcode) %>%
+  filter(n() == 2) 
+
+s2_qc_tcr_barcode_count_alpha <- length(unique(s2_two_alphas$barcode)) 
+s2_qc_tcr_barcode_count_alpha
+```
+
+How many barcodes have 2 beta chains?
+
+```{r}
+s1_two_betas <- s1_tcr_qc %>%
+  filter(chain == "TRB") %>%
+  group_by(barcode) %>%
+  filter(n() == 2) 
+s1_qc_tcr_barcode_count_beta <- length(unique(s1_two_betas$barcode)) 
+s1_qc_tcr_barcode_count_beta 
+
+s2_two_betas <- s2_tcr_qc %>%
+  filter(chain == "TRB") %>%
+  group_by(barcode) %>%
+  filter(n() == 2) 
+s2_qc_tcr_barcode_count_beta <- length(unique(s2_two_betas$barcode))
+s2_qc_tcr_barcode_count_beta
+```
+
+Do any of the "2-contig" ("doublet") cell barcodes have 2 alpha or 2 beta chains?
+
+```{r}
+s1_tcr_qc_doublets <- s1_tcr_qc[s1_tcr_qc$barcode %in% names(which(table(s1_tcr_qc$barcode) == 2)),]
+table(s1_tcr_qc_doublets$chain) 
+
+s2_tcr_qc_doublets <- s2_tcr_qc[s2_tcr_qc$barcode %in% names(which(table(s2_tcr_qc$barcode) == 2)),]
+table(s2_tcr_qc_doublets$chain) 
+```
+
+Only the "3-contig" ("triplet") cell barcodes have 2 alpha or 2 beta chains. Two productive alpha or beta chains are possible, but I only want to keep 1 alpha and 1 beta chain per cell barcode. Pick the variant of the chain that has the highest number of UMIs (or reads if UMIs are equal).
+
+```{r}
+s1_tcr_qc <- s1_tcr_qc %>%
+  group_by(barcode, chain) %>%
+  filter(umis == max(umis)) %>%
+  filter(reads == max(reads)) %>%
+  ungroup()
+
+s2_tcr_qc <- s2_tcr_qc %>%
+  group_by(barcode, chain) %>%
+  filter(umis == max(umis)) %>%
+  filter(reads == max(reads)) %>%
+  ungroup()
+```
+
+# Save output
+Save the reformatted contig data as .csv files.
+
+```{r}
+if(save_output){
+  write.csv(s1_tcr_qc, here::here("processed_data/TCR/s1_qc_filtered_contigs.csv"), row.names = FALSE)
+  write.csv(s2_tcr_qc, here::here("processed_data/TCR/s2_qc_filtered_contigs.csv"), row.names = FALSE)
+}
+```
+
+# QC Visualizations
+
+Set ggthemes for pie charts.
+
+```{r}
+pie_theme <- theme_minimal() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    axis.ticks = element_blank(),
+    plot.title = element_text(size = 17),
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 13)
+  )
+```
+
+## Tabulate counts
+
+```{r}
+steps <- c("1. Cell Ranger filtered V(D)J output", "2. Pass RNA and ADT QC", "3. Drop barcodes with only 1 alpha chain",
+           "4. Drop barcodes with 4+ chains")
+categories <- c("2 alpha chains", "2 beta chains")
+```
+
+### Spike 1
+
+```{r}
+s1_counts <- c(s1_tcr_barcode_count, s1_qc_tcr_barcode_count,
+           s1_qc_tcr_barcode_count_single_alpha, s1_qc_tcr_barcode_count_multi)
+s1_barcode_count_df <- data.frame(steps, s1_counts)
+print(knitr::kable(s1_barcode_count_df, caption = "S1 TCR QC cell barcode counts"))
+
+s1_ab_counts <- c(s1_qc_tcr_barcode_count_alpha, s1_qc_tcr_barcode_count_beta)
+s1_triplet_ab_count_df <- data.frame(categories, s1_ab_counts)
+print(knitr::kable(s1_triplet_ab_count_df, caption = "S1 Number of cell barcodes w/ 2 alpha or beta chains"))
+```
+
+### Spike 2
+
+```{r}
+s2_counts <- c(s2_tcr_barcode_count, s2_qc_tcr_barcode_count,
+               s2_qc_tcr_barcode_count_single_alpha, s2_qc_tcr_barcode_count_multi)
+s2_barcode_count_df <- data.frame(steps, s2_counts)
+print(knitr::kable(s2_barcode_count_df, caption = "S2 TCR QC cell barcode counts"))
+
+s2_ab_counts <- c(s2_qc_tcr_barcode_count_alpha, s2_qc_tcr_barcode_count_beta)
+s2_triplet_ab_count_df <- data.frame(categories, s2_ab_counts)
+print(knitr::kable(s2_triplet_ab_count_df, caption = "S2 Number of cell barcodes w/ 2 alpha or beta chains"))
+```
+
+## Contig composition pie chart
+Make pie charts of contig composition before dropping barcodes.
+
+### Spike 1
+
+```{r, fig.width=6, fig.height=5}
+s1_one_contig <- length(which(table(s1_tcr$barcode) == 1))
+s1_two_contig <- length(which(table(s1_tcr$barcode) == 2))
+s1_three_contig <- length(which(table(s1_tcr$barcode) == 3))
+s1_multi_contig <- length(which(table(s1_tcr$barcode) > 3))
+
+s1_contig_count_lab <- c("1", "2", "3", "4+")
+s1_contig_counts <- c(s1_one_contig, s1_two_contig, s1_three_contig, s1_multi_contig)
+s1_contig_count_df <- data.frame(s1_contig_count_lab, s1_contig_counts)
+
+s1_contig_plot <- s1_contig_count_df %>%
+  group_by(s1_contig_count_lab) %>%
+  mutate(pct = s1_contig_counts/length(unique(s1_tcr$barcode))) %>%
+  ungroup() %>%
+  ggplot(aes(x = "", y = pct, fill = s1_contig_count_lab)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  coord_polar("y", start = 0) +
+  pie_theme +
+  ggtitle("Spike 1 Cell Ranger Filtered Contig Distribution") +
+  scale_fill_discrete(name = "# of chains")
+s1_contig_plot
+```
+
+### Spike 2
+
+```{r, fig.width=6, fig.height=5}
+s2_one_contig <- length(which(table(s2_tcr$barcode) == 1))
+s2_two_contig <- length(which(table(s2_tcr$barcode) == 2))
+s2_three_contig <- length(which(table(s2_tcr$barcode) == 3))
+s2_multi_contig <- length(which(table(s2_tcr$barcode) > 3))
+
+s2_contig_count_lab <- c("1", "2", "3", "4+")
+s2_contig_counts <- c(s2_one_contig, s2_two_contig, s2_three_contig, s2_multi_contig)
+s2_contig_count_df <- data.frame(s2_contig_count_lab, s2_contig_counts)
+
+s2_contig_plot <- s2_contig_count_df %>%
+  group_by(s2_contig_count_lab) %>%
+  mutate(pct = s2_contig_counts/length(unique(s2_tcr$barcode))) %>%
+  ungroup() %>%
+  ggplot(aes(x = "", y = pct, fill = s2_contig_count_lab)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  coord_polar("y", start = 0) +
+  pie_theme +
+  ggtitle("Spike 2 Cell Ranger Filtered Contig Distribution") +
+  scale_fill_discrete(name = "# of chains")
+s2_contig_plot
+```
+
+## Group composition pie chart
+Make pie charts of group composition after dropping barcodes.
+
+### Spike 1
+
+```{r, fig.width=6, fig.height=5}
+s1_group_plot <- s1_tcr_qc %>%
+  group_by(barcode, Group) %>%
+  summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ungroup() %>%
+  ggplot(aes(x = "", y = pct, fill = Group)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  coord_polar("y", start = 0) +
+  pie_theme +
+  scale_fill_brewer(palette = "Set1") +
+  ggtitle("Spike 1 Group Composition (post-TCR QC)") 
+s1_group_plot
+```
+
+### Spike 2
+
+```{r, fig.width=6, fig.height=5}
+s2_group_plot <- s2_tcr_qc %>%
+  group_by(barcode, Group) %>%
+  summarise(count = n()) %>%
+  mutate(pct = count/sum(count)) %>%
+  ungroup() %>%
+  ggplot(aes(x = "", y = pct, fill = Group)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  coord_polar("y", start = 0) +
+  pie_theme +
+  scale_fill_brewer(palette = "Set1") +
+  ggtitle("Spike 2 Group Composition (post-TCR QC)")
+s2_group_plot
+```
+
+## Triplets composition pie charts
+Make pie charts of proportions of "three-contig" ("triplet") cell barcodes that have 2 alpha or 2 beta chains 
+
+### Spike 1
+
+```{r, fig.width=6, fig.height=5}
+s1_ab_plot <- s1_triplet_ab_count_df %>%
+  mutate(pct = s1_ab_counts/sum(s1_ab_counts)) %>%
+  ggplot(aes(x = "", y = pct, fill = categories)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  coord_polar("y", start = 0) +
+  pie_theme +
+  ggtitle("Spike 1 'Triplets' Composition") +
+  scale_fill_brewer(palette = "Pastel2", name = "Chain")
+s1_ab_plot
+```
+
+### Spike 2
+
+```{r, fig.width=6, fig.height=5}
+s2_ab_plot <- s2_triplet_ab_count_df %>%
+  mutate(pct = s2_ab_counts/sum(s2_ab_counts)) %>%
+  ggplot(aes(x = "", y = pct, fill = categories)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent) +
+  coord_polar("y", start = 0) +
+  pie_theme +
+  ggtitle("Spike 2 'Triplets' Composition") +
+  scale_fill_brewer(palette = "Pastel2", name = "Chain")
+s2_ab_plot
+```
+
+## QC step bar graph 
+Make bar graphs of cell barcode counts along each QC step.
+
+```{r}
+make_qc_plot <- function(counts_df, title) {
+  qc_plot <- ggplot(counts_df,
+            aes(x = reorder(counts_df[,1], as.numeric(counts_df[,2])),
+                y = as.numeric(counts_df[,2]))) +
+  geom_col() +
+  theme_bw() +
+  geom_text(aes(label = counts_df[,2]),
+              position = position_stack(vjust = 0.5),
+              color = "white",
+              size = 5) +
+    theme(text = element_text(family = "Arial"),
+          axis.title.x = element_text(size = 12),
+          axis.title.y = element_blank(),
+          axis.text.x = element_text(color = "black", size = 12),
+          axis.text.y = element_text(color = "black", size = 9),
+          plot.title = element_text(size = 12, hjust = 0.5),
+          panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.line.y.left = element_line(color = "black"),
+          axis.line.x.bottom = element_line(color = "black")) +
+  scale_y_continuous(n.breaks = 5) +
+  coord_flip() +
+  labs(y = "# of cell barcodes remaining after QC",
+       x = "QC step",
+       title = title)
+}
+```
+
+### Spike 1
+
+```{r, fig.width=8, fig.height=4}
+s1_qc_plot <- make_qc_plot(counts_df = s1_barcode_count_df, title = "S1")  
+s1_qc_plot
+```
+
+### Spike 2
+
+```{r, fig.width=8, fig.height=4}
+s2_qc_plot <- make_qc_plot(counts_df = s2_barcode_count_df, title = "S2")  
+s2_qc_plot  
+```
+
+# Save plots
+
+```{r}
+if(save_output) {
+  cairo_pdf(file=here::here("out/qc_plots/tcr_qc_step_plots.pdf"), width=5, height=3,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(s1_qc_plot)
+  print(s2_qc_plot)
+  dev.off()
+}
+```

@@ -1,0 +1,223 @@
+---
+title: "HAARVIVAC 10X QC Plots"
+author: "Jolie Phan"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+date: "version `r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(ggbeeswarm)
+library(RColorBrewer)
+library(ggh4x)
+```
+
+# Load data
+
+```{r}
+s1 <- readRDS(file = here::here("processed_data/20220323_s1_tcells_only.rds"))
+s2 <- readRDS(file = here::here("processed_data/20220323_s2_tcells_only.rds"))
+
+s1_qc_counts <- readRDS(file = here::here("out/s1_qc_counts.rds"))
+s2_qc_counts <- readRDS(file = here::here("out/s2_qc_counts.rds"))
+
+if(!dir.exists(here::here("out/qc_plots"))) {
+    cat(sprintf("Creating folder %s\n", here::here("out/qc_plots")))
+    dir.create(here::here("out/qc_plots"), recursive = T)
+}
+
+save_output <- TRUE
+```
+
+```{r}
+# Arial font setup. Downloaded afms from https://github.com/microsoft/microsoft-r-open/tree/ec3fd89e5fb5794bd8149905c134ad801bb61800
+Arial <- Type1Font(family = "Arial",
+                   metrics = c(here::here("data/Arial_afm/ArialMT.afm"),
+                               here::here("data/Arial_afm/ArialMT-Bold.afm"),
+                               here::here("data/Arial_afm/ArialMT-Italic.afm"),
+                               here::here("data/Arial_afm/ArialMT-BoldItalic.afm")))
+windowsFonts("Arial" = windowsFont("Arial"))
+pdfFonts(Arial = Arial)
+```
+
+# Cell count per sample
+Check for differences in cell count per sample between naive and convalescent donors.
+
+```{r}
+brewer.pal(8, "Dark2")
+ptid_colors <- c(`50H` = "#1B9E77", `53H` = "#D95F02", `54H` = "#7570B3",
+                 `55H` = "#E7298A", `120C` = "#66A61E", 
+                 `149C` = "#E6AB02", `194C` = "#A6761D",
+                 `239C` = "#666666")
+
+make_dotplot <- function(count_df, ptid_colors, current_stim, no_legend) {
+  count_test <- wilcox.test(Freq ~ Group, data = count_df, paired = FALSE)
+  
+  count_test_df <- data.frame(p = as.numeric(unlist(count_test)["p.value"])) %>%
+    mutate(p.text = if_else(p < 0.001, "p<0.001", paste0("p=", formatC(round(p, 3), format='f', digits=3))))
+  
+  count_plot <- ggplot(count_df, aes(x = factor(Group, levels = c("Naive", "Conv")), y = Freq)) +
+    theme_bw() +
+    stat_summary(fun = median, geom = "crossbar", width = 0.3) +
+    geom_quasirandom(size = 3, shape = 16, width = 0.3, aes(color = PTID)) +
+    theme(text = element_text(family = "Arial"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_text(size=20),
+          axis.text.y = element_text(color="black", size=17),
+          axis.text.x = element_text(color="black", size=20),
+          legend.title = element_text(color="black", size=17),
+          legend.text = element_text(color="black", size=15),
+          legend.position = "bottom",
+          plot.title = element_text(hjust = 0.5, size = 21),
+          plot.margin = margin(0.3, 0.2, 0.1, 0.2, "cm"),
+          panel.grid = element_blank()) +
+    scale_fill_manual(values = ptid_colors) +
+    labs(title = as.character(current_stim),
+         y = "Cell count per sample") +
+    force_panelsizes(rows = unit(3.5, "in"),
+                     cols = unit(2, "in"))
+  
+  if(no_legend){
+    count_plot <- count_plot +
+      theme(legend.title = element_blank(),
+            legend.position="none") 
+  }
+  
+  plot_ylims <- ggplot_build(count_plot)$layout$panel_params[[1]]$y.range
+
+  count_plot <- count_plot +
+    annotate("text", x = 1.5, y = plot_ylims[2] + 0.01*diff(plot_ylims),
+             label = count_test_df$p.text, size = 5.5) +
+    coord_cartesian(ylim = c(plot_ylims[[1]], plot_ylims[[2]] + 0.09*diff(plot_ylims)))
+}
+```
+
+```{r, fig.width=10, fig.height=6}
+# Get data
+s1_count_df <- table(s1$Group, s1$PTID) %>%
+  as.data.frame()%>%
+  filter(Freq != 0) %>%
+  filter(Var1 %in% c("Conv", "Naive")) %>%
+  dplyr::rename(Group = Var1) %>%
+  dplyr::rename(PTID = Var2)
+
+s2_count_df <- table(s2$Group, s2$PTID) %>%
+  as.data.frame()%>%
+  filter(Freq != 0) %>%
+  filter(Var1 %in% c("Conv", "Naive")) %>%
+  dplyr::rename(Group = Var1) %>%
+  dplyr::rename(PTID = Var2)
+
+# Plot counts
+s1_count_dotplot <- make_dotplot(s1_count_df, ptid_colors, "S1", no_legend = TRUE)
+
+s2_count_dotplot <- make_dotplot(s2_count_df, ptid_colors, "S2", no_legend = FALSE)
+
+s1_count_dotplot | s2_count_dotplot
+
+# What's the average?
+mean(c(s1_count_df$Freq, s2_count_df$Freq)) # 480.875
+```
+
+
+# QC step bar graph 
+Make bar graphs of cell barcode counts along each RNA and ADT QC step.
+
+```{r}
+# Get data
+s1_tcell_count <- length(s1$orig.ident)
+s2_tcell_count <- length(s2$orig.ident)
+
+s1_total_qc_counts <- data.frame(s1_qc_counts, s1_tcell_count) %>%
+  rename("1. Cell Ranger filtered feature output" = "s1_start_count") %>%
+  rename("2. Demultiplex with HTOs" = "s1_singlet_count") %>%
+  rename("3. >200 unique genes/cell" = "s1_200_gene_count") %>%
+  rename("4. <5% MT counts" = "s1_5_mt_count") %>%
+  rename("5. CD3+ T cells (by ADT)" = "s1_tcell_count") %>%
+  tidyr::pivot_longer(everything(), names_to = "Step", values_to = "Count")
+s1_total_qc_counts$Step <- factor(c("1. Cell Ranger filtered feature output", "2. Demultiplex with HTOs", "3. >200 unique genes/cell", "4. <5% MT counts", "5. CD3+ T cells (by ADT)"))
+
+s2_total_qc_counts <- data.frame(s2_qc_counts, s2_tcell_count) %>%
+  rename("1. Cell Ranger filtered feature output" = "s2_start_count") %>%
+  rename("2. Demultiplex with HTOs" = "s2_singlet_count") %>%
+  rename("3. >200 unique genes/cell" = "s2_200_gene_count") %>%
+  rename("4. <5% MT counts" = "s2_5_mt_count") %>%
+  rename("5. CD3+ T cells (by ADT)" = "s2_tcell_count") %>%
+  tidyr::pivot_longer(everything(), names_to = "Step", values_to = "Count")
+s2_total_qc_counts$Step <- factor(c("1. Cell Ranger filtered feature output", "2. Demultiplex with HTOs", "3. >200 unique genes/cell", "4. <5% MT counts", "5. CD3+ T cells (by ADT)"))
+
+# Define function
+make_qc_graph <- function(counts, title) {
+  qc_plot <- ggplot(counts, aes(x = reorder(Step, desc(Step)), y = as.numeric(Count))) +
+    geom_col() +
+    theme_bw() +
+    geom_text(aes(label = Count),
+              position = position_stack(vjust = 0.5),
+              color = "white",
+              size = 5) +
+    theme(text = element_text(family = "Arial"),
+          axis.title.x = element_text(size = 12),
+          axis.title.y = element_blank(),
+          axis.text.x = element_text(color = "black", size = 12),
+          axis.text.y = element_text(color = "black", size = 9),
+          plot.title = element_text(size = 12, hjust = 0.5),
+          panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.line.y.left = element_line(color = "black"),
+          axis.line.x.bottom = element_line(color = "black")) +
+    scale_y_continuous(n.breaks = 5) +
+    coord_flip() +
+    labs(y = "# of cell barcodes remaining after QC",
+         title = title)
+}
+```
+
+## Spike 1
+
+```{r, fig.width=8, fig.height=4}
+s1_qc_plot <- make_qc_graph(counts = s1_total_qc_counts, title = "S1")
+s1_qc_plot  
+```
+
+## Spike 2
+
+```{r, fig.width=8, fig.height=4}
+s2_qc_plot <- make_qc_graph(counts = s2_total_qc_counts, title = "S2")
+s2_qc_plot  
+```
+
+# Save plots
+
+```{r}
+if(save_output) {
+  cairo_pdf(file=here::here("out/qc_plots/count_dotplots.pdf"), width=5, height=5,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(s1_count_dotplot)
+  print(s2_count_dotplot)
+  dev.off()
+  
+  cairo_pdf(file=here::here("out/qc_plots/qc_step_plots.pdf"), width=5, height=3,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(s1_qc_plot)
+  print(s2_qc_plot)
+  dev.off()
+}
+```

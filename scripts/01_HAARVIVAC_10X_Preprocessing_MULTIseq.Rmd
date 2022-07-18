@@ -1,0 +1,376 @@
+---
+title: "HAARVIVAC 10X Pre-processing MULTIseqDemux"
+author: "Jolie Phan"
+output: 
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+date: "version `r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(hdf5r)
+library(stringr)
+library(ggplot2)
+library(cowplot)
+```
+
+# Load RNA, ADT, and HTO data from .h5 files 
+
+```{r}
+save_output <- FALSE
+addTitleToMultiPlot <- function(plotGrid, title, relHeights = c(0.1, 1)) {
+plot_grid(ggdraw() + draw_label(title), plotGrid, ncol = 1, rel_heights = relHeights)
+}
+
+s1_dat <- Read10X_h5(here::here("data/S1/filtered_feature_bc_matrix.h5"))
+s2_dat <- Read10X_h5(here::here("data/S2/filtered_feature_bc_matrix.h5"))
+
+if(!dir.exists(here::here("processed_data"))) {
+  cat(sprintf("Creating folder %s\n", here::here("processed_data")))
+  dir.create(here::here("processed_data"), recursive = T)
+}
+
+# Shorten ADT and HTO names
+rownames(s1_dat$`Antibody Capture`) <- rownames(s1_dat$`Antibody Capture`) %>%
+  str_replace("_TotalSeqCHashing", "") %>%
+  str_replace("_TotalSeqC", "")
+
+rownames(s2_dat$`Antibody Capture`) <- rownames(s2_dat$`Antibody Capture`) %>%
+  str_replace("_TotalSeqCHashing", "") %>%
+  str_replace("_TotalSeqC", "")
+
+# Extract matrices of ADT and HTO info 
+s1_ADT <- !grepl("Hashtag", s1_dat$`Antibody Capture`@Dimnames[[1]])
+s1_ADT_counts <- s1_dat$`Antibody Capture`[s1_ADT,]
+s1_HTO <- grepl("Hashtag", s1_dat$`Antibody Capture`@Dimnames[[1]])
+s1_HTO_counts <- s1_dat$`Antibody Capture`[s1_HTO,]
+
+s2_ADT <- !grepl("Hashtag", s2_dat$`Antibody Capture`@Dimnames[[1]])
+s2_ADT_counts <- s2_dat$`Antibody Capture`[s2_ADT,]
+s2_HTO <- grepl("Hashtag", s2_dat$`Antibody Capture`@Dimnames[[1]])
+s2_HTO_counts <- s2_dat$`Antibody Capture`[s2_HTO,]
+```
+
+# Set up Seurat object 
+
+```{r}
+s1 <- CreateSeuratObject(counts = s1_dat$`Gene Expression`, project = "HAARVIVAC_10X_S1", min.cells = 3)
+s1[["ADT"]] <-  CreateAssayObject(counts = s1_ADT_counts)
+s1[["HTO"]] <-  CreateAssayObject(counts = s1_HTO_counts)
+Assays(s1)
+
+s2 <- CreateSeuratObject(counts = s2_dat$`Gene Expression`, project = "HAARVIVAC_10X_S2", min.cells = 3)
+s2[["ADT"]] <-  CreateAssayObject(counts = s2_ADT_counts)
+s2[["HTO"]] <-  CreateAssayObject(counts = s2_HTO_counts)
+Assays(s2)
+
+s1_start_count <- length(s1_dm$orig.ident)
+s2_start_count <- length(s2_dm$orig.ident)
+```
+
+# Demultiplex cells based on HTO enrichment
+MULTIseqDemux() demultiplexes samples based on the classification method from MULTI-seq. 
+
+The "autoThresh" argument decides whether to perform automated threshold finding to define the best quantile. 
+
+```{r, fig.width=12, fig.height=10}
+# Normalize HTO data using centered log-ratio (CLR) transformation 
+s1 <- NormalizeData(s1, assay = "HTO", normalization.method = "CLR")
+s2 <- NormalizeData(s2, assay = "HTO", normalization.method = "CLR")
+
+# Demultiplex
+s1_dm <- MULTIseqDemux(s1, assay = "HTO", autoThresh = TRUE)
+s2_dm <- MULTIseqDemux(s2, assay = "HTO", autoThresh = TRUE)
+
+# Assign global classification
+i1 <- grepl("Hashtag", s1_dm@meta.data$MULTI_ID)
+i2 <- grepl("Doublet", s1_dm@meta.data$MULTI_ID)
+i3 <- grepl("Negative", s1_dm@meta.data$MULTI_ID)
+s1_dm@meta.data$MULTI_ID_global <- NULL
+s1_dm@meta.data$MULTI_ID_global[i1] <- "Singlet"
+s1_dm@meta.data$MULTI_ID_global[i2] <- "Doublet"
+s1_dm@meta.data$MULTI_ID_global[i3] <- "Negative"
+s1_dm@meta.data$MULTI_ID_global <- factor(s1_dm@meta.data$MULTI_ID_global, levels = c("Doublet", "Negative", "Singlet"))
+
+i1 <- grepl("Hashtag", s2_dm@meta.data$MULTI_ID)
+i2 <- grepl("Doublet", s2_dm@meta.data$MULTI_ID)
+i3 <- grepl("Negative", s2_dm@meta.data$MULTI_ID)
+s2_dm@meta.data$MULTI_ID_global <- NULL
+s2_dm@meta.data$MULTI_ID_global[i1] <- "Singlet"
+s2_dm@meta.data$MULTI_ID_global[i2] <- "Doublet"
+s2_dm@meta.data$MULTI_ID_global[i3] <- "Negative"
+s2_dm@meta.data$MULTI_ID_global <- factor(s2_dm@meta.data$MULTI_ID_global, levels = c("Doublet", "Negative", "Singlet"))
+
+# Global classification results
+table(s1_dm$MULTI_ID_global)
+table(s2_dm$MULTI_ID_global)
+
+# Assign maxID (name of hashtag with the highest signal)
+s1_maxID <- as.data.frame(GetAssayData(s1_dm, slot = "data", assay = "HTO")) %>%
+  tibble::rownames_to_column(var = "Hashtag") %>%
+  tidyr::pivot_longer(-Hashtag, names_to = "Name", values_to = "Data") %>%
+  tidyr::pivot_wider(names_from = "Hashtag", values_from = "Data") %>%
+  tibble::column_to_rownames(var = "Name") %>%
+  mutate(MULTI_maxID = purrr::pmap(across(everything()), ~ names(c(...)[which.max(c(...))]))) %>%
+  select(MULTI_maxID)
+
+s1_dm@meta.data <- s1_dm@meta.data %>%
+  merge(s1_maxID, by = 0) %>%
+  tibble::column_to_rownames(var = "Row.names")
+
+s2_maxID <- as.data.frame(GetAssayData(s2_dm, slot = "data", assay = "HTO")) %>%
+  tibble::rownames_to_column(var = "Hashtag") %>%
+  tidyr::pivot_longer(-Hashtag, names_to = "Name", values_to = "Data") %>%
+  tidyr::pivot_wider(names_from = "Hashtag", values_from = "Data") %>%
+  tibble::column_to_rownames(var = "Name") %>%
+  mutate(MULTI_maxID = purrr::pmap(across(everything()), ~ names(c(...)[which.max(c(...))]))) %>%
+  select(MULTI_maxID)
+
+s2_dm@meta.data <- s2_dm@meta.data %>%
+  merge(s2_maxID, by = 0) %>%
+  tibble::column_to_rownames(var = "Row.names")
+
+# Assign PTIDs and infection status
+i1 <- grepl("Hashtag-1", s1_dm@meta.data$MULTI_ID)
+i2 <- grepl("Hashtag-2", s1_dm@meta.data$MULTI_ID)
+i3 <- grepl("Hashtag-3", s1_dm@meta.data$MULTI_ID) 
+i4 <- grepl("Hashtag-4", s1_dm@meta.data$MULTI_ID)
+i5 <- grepl("Hashtag-5", s1_dm@meta.data$MULTI_ID)
+i6 <- grepl("Hashtag-6", s1_dm@meta.data$MULTI_ID)
+i7 <- grepl("Hashtag-7", s1_dm@meta.data$MULTI_ID) 
+i8 <- grepl("Hashtag-8", s1_dm@meta.data$MULTI_ID) 
+i9 <- grepl("Doublet", s1_dm@meta.data$MULTI_ID) 
+i10 <- grepl("Negative", s1_dm@meta.data$MULTI_ID) 
+s1_dm@meta.data$PTID <- NULL
+s1_dm@meta.data$PTID[i1] <- "50H"
+s1_dm@meta.data$PTID[i2] <- "53H"
+s1_dm@meta.data$PTID[i3] <- "54H"
+s1_dm@meta.data$PTID[i4] <- "55H"
+s1_dm@meta.data$PTID[i5] <- "120C"
+s1_dm@meta.data$PTID[i6] <- "149C"
+s1_dm@meta.data$PTID[i7] <- "194C"
+s1_dm@meta.data$PTID[i8] <- "239C"
+s1_dm@meta.data$PTID[i9] <- "Doublet"
+s1_dm@meta.data$PTID[i10] <- "Negative"
+
+i11 <- grepl("H", s1_dm@meta.data$PTID) 
+i12 <- grepl("C", s1_dm@meta.data$PTID)
+s1_dm@meta.data$Group <- NULL
+s1_dm@meta.data$Group[i11] <- "Naive"
+s1_dm@meta.data$Group[i12] <- "Conv"
+s1_dm@meta.data$Group[i9] <- "Doublet"
+s1_dm@meta.data$Group[i10] <- "Negative"
+s1_dm@meta.data$Group <- factor(s1_dm@meta.data$Group, levels = c("Conv", "Naive", "Doublet", "Negative"))
+
+i1 <- grepl("Hashtag-1", s2_dm@meta.data$MULTI_ID)
+i2 <- grepl("Hashtag-2", s2_dm@meta.data$MULTI_ID)
+i3 <- grepl("Hashtag-3", s2_dm@meta.data$MULTI_ID) 
+i4 <- grepl("Hashtag-4", s2_dm@meta.data$MULTI_ID)
+i5 <- grepl("Hashtag-5", s2_dm@meta.data$MULTI_ID)
+i6 <- grepl("Hashtag-6", s2_dm@meta.data$MULTI_ID)
+i7 <- grepl("Hashtag-7", s2_dm@meta.data$MULTI_ID) 
+i8 <- grepl("Hashtag-8", s2_dm@meta.data$MULTI_ID) 
+i9 <- grepl("Doublet", s2_dm@meta.data$MULTI_ID) 
+i10 <- grepl("Negative", s2_dm@meta.data$MULTI_ID) 
+s2_dm@meta.data$PTID <- NULL
+s2_dm@meta.data$PTID[i1] <- "50H"
+s2_dm@meta.data$PTID[i2] <- "53H"
+s2_dm@meta.data$PTID[i3] <- "54H"
+s2_dm@meta.data$PTID[i4] <- "55H"
+s2_dm@meta.data$PTID[i5] <- "120C"
+s2_dm@meta.data$PTID[i6] <- "149C"
+s2_dm@meta.data$PTID[i7] <- "194C"
+s2_dm@meta.data$PTID[i8] <- "239C"
+s2_dm@meta.data$PTID[i9] <- "Doublet"
+s2_dm@meta.data$PTID[i10] <- "Negative"
+
+i11 <- grepl("H", s2_dm@meta.data$PTID) 
+i12 <- grepl("C", s2_dm@meta.data$PTID)
+s2_dm@meta.data$Group <- NULL
+s2_dm@meta.data$Group[i11] <- "Naive"
+s2_dm@meta.data$Group[i12] <- "Conv"
+s2_dm@meta.data$Group[i9] <- "Doublet"
+s2_dm@meta.data$Group[i10] <- "Negative"
+s2_dm@meta.data$Group <- factor(s2_dm@meta.data$Group, levels = c("Conv", "Naive", "Doublet", "Negative"))
+
+# if(save_output) {
+#   saveRDS(s1_dm, file = here::here("out/20211118_s1_mdm_all.rds"))
+#   saveRDS(s2_dm, file = here::here("out/20211118_s2_mdm_all.rds"))  
+# }
+```
+
+## HTO enrichment 
+
+```{r, fig.width=12, fig.height=10}
+Idents(s1_dm) <- "MULTI_maxID"
+RidgePlot(s1_dm, assay = "HTO", features = rownames(s1_dm[["HTO"]]), ncol = 3)
+
+Idents(s2_dm) <- "MULTI_maxID"
+RidgePlot(s2_dm, assay = "HTO", features = rownames(s2_dm[["HTO"]]), ncol = 3)
+```
+
+## Number of UMIs for singlets, doublets, and negative cells
+
+```{r, fig.width=12, fig.height=10}
+Idents(s1_dm) <- "MULTI_ID_global"
+VlnPlot(s1_dm, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+
+Idents(s2_dm) <- "MULTI_ID_global"
+VlnPlot(s2_dm, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+```
+
+```{r}
+# Remove negative cells
+s1_dm_subset <- subset(s1_dm, idents = "Negative", invert = TRUE)
+s2_dm_subset <- subset(s2_dm, idents = "Negative", invert = TRUE)
+```
+
+## tSNE embedding of the HTO data
+
+```{r, fig.width=12, fig.height=10}
+DefaultAssay(s1_dm_subset) <- "HTO"
+s1_dm_subset <- ScaleData(s1_dm_subset, features = rownames(s1_dm_subset),
+                                 verbose = FALSE)
+s1_dm_subset <- RunPCA(s1_dm_subset, features = rownames(s1_dm_subset), approx = FALSE)
+s1_dm_subset <- RunTSNE(s1_dm_subset, dims = 1:8, perplexity = 100)
+DimPlot(s1_dm_subset) + ggtitle("Spike 1")
+
+DefaultAssay(s2_dm_subset) <- "HTO"
+s2_dm_subset <- ScaleData(s2_dm_subset, features = rownames(s2_dm_subset),
+                          verbose = FALSE)
+s2_dm_subset <- RunPCA(s2_dm_subset, features = rownames(s2_dm_subset), approx = FALSE)
+s2_dm_subset <- RunTSNE(s2_dm_subset, dims = 1:8, perplexity = 100)
+DimPlot(s2_dm_subset) + ggtitle("Spike 2")
+```
+
+Are the # of cells per Group and PTID balanced?
+
+```{r, fig.width=12, fig.height=10}
+Idents(s1_dm_subset) <- "PTID"
+DimPlot(s1_dm_subset) + ggtitle("Spike 1")
+
+Idents(s2_dm_subset) <- "PTID"
+DimPlot(s2_dm_subset) + ggtitle("Spike 2")
+
+Idents(s1_dm_subset) <- "Group"
+DimPlot(s1_dm_subset) + ggtitle("Spike 1")
+
+Idents(s2_dm_subset) <- "Group"
+DimPlot(s2_dm_subset) + ggtitle("Spike 2")
+```
+
+```{r}
+# Remove doublets and negative cells
+s1_dm_singlets <- subset(s1_dm, idents = "Singlet")
+s2_dm_singlets <- subset(s2_dm, idents = "Singlet")
+
+s1_singlet_count <- length(s1_dm_singlets$orig.ident)
+s2_singlet_count <- length(s2_dm_singlets$orig.ident)
+```
+
+# Analyze ADT data
+
+```{r}
+DefaultAssay(s1_dm_singlets) <- "ADT"
+rownames(s1_dm_singlets)
+```
+
+## ADT enrichment
+There are 35 markers and 3 IgG negative controls total. 
+
+```{r, fig.width=12, fig.height=10}
+s1_dm_singlets <- NormalizeData(s1_dm_singlets, normalization.method = "CLR", margin = 2, assay = "ADT")
+RidgePlot(s1_dm_singlets, assay = "ADT", features = c("CD3", "CD4", "CD8a", "GD", "CD62L", "TRAV1-2", "CD28", "CD127", "CD95", "Mouse-IgG1-Isotype-Control"), ncol = 2) %>%
+  addTitleToMultiPlot("Spike 1")
+
+s2_dm_singlets <- NormalizeData(s2_dm_singlets, normalization.method = "CLR", margin = 2, assay = "ADT")
+RidgePlot(s2_dm_singlets, assay = "ADT", features = c("CD3", "CD4", "CD8a", "GD", "CD62L", "TRAV1-2", "CD28", "CD127", "CD95", "Mouse-IgG1-Isotype-Control"), ncol = 2) %>%
+  addTitleToMultiPlot("Spike 2")
+```
+
+# Analyze RNA data
+
+```{r}
+DefaultAssay(s1_dm_singlets) <- "RNA"
+DefaultAssay(s2_dm_singlets) <- "RNA"
+```
+
+## QC
+Filter cells that have unique feature counts >200 and mitochondrial counts <5%
+
+```{r, fig.width=12, fig.height=10}
+s1_dm_singlets[["percent.mt"]] <- PercentageFeatureSet(s1_dm_singlets, pattern = "^MT-")
+VlnPlot(s1_dm_singlets, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3) %>%
+  addTitleToMultiPlot("Spike 1")
+s1_dm_singlets <- subset(s1_dm_singlets, subset = nFeature_RNA > 200)
+s1_200_gene_count <- length(s1_dm_singlets$orig.ident)
+
+s1_dm_singlets <- subset(s1_dm_singlets, subset = percent.mt < 5)
+s1_5_mt_count <- length(s1_dm_singlets$orig.ident)
+
+s2_dm_singlets[["percent.mt"]] <- PercentageFeatureSet(s2_dm_singlets, pattern = "^MT-")
+VlnPlot(s2_dm_singlets, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3) %>%
+  addTitleToMultiPlot("Spike 2")
+s2_dm_singlets <- subset(s2_dm_singlets, subset = nFeature_RNA > 200)
+s2_200_gene_count <- length(s2_dm_singlets$orig.ident)
+
+s2_dm_singlets <- subset(s2_dm_singlets, subset = percent.mt < 5)
+s2_5_mt_count <- length(s2_dm_singlets$orig.ident)
+```
+
+Make table of QC cell counts.
+
+```{r}
+s1_qc_counts <- data.frame(s1_start_count, s1_singlet_count, s1_200_gene_count, s1_5_mt_count)
+
+s2_qc_counts <- data.frame(s2_start_count, s2_singlet_count, s2_200_gene_count, s2_5_mt_count)
+
+saveRDS(s1_qc_counts, file = here::here("out/s1_qc_counts.rds"))
+saveRDS(s2_qc_counts, file = here::here("out/s2_qc_counts.rds"))
+```
+
+## Perform visualization and clustering steps
+
+```{r, fig.width=12, fig.height=10}
+s1_dm_singlets <- NormalizeData(s1_dm_singlets)
+s1_dm_singlets <- FindVariableFeatures(s1_dm_singlets)
+s1_dm_singlets <- ScaleData(s1_dm_singlets)
+s1_dm_singlets <- RunPCA(s1_dm_singlets, verbose = FALSE)
+ElbowPlot(s1_dm_singlets)
+s1_dm_singlets <- FindNeighbors(s1_dm_singlets, dims = 1:10)
+s1_dm_singlets <- FindClusters(s1_dm_singlets, resolution = 0.8, verbose = FALSE)
+s1_dm_singlets <- RunUMAP(s1_dm_singlets, dims = 1:10)
+DimPlot(s1_dm_singlets, label = TRUE) + ggtitle("Spike 1")
+
+s2_dm_singlets <- NormalizeData(s2_dm_singlets)
+s2_dm_singlets <- FindVariableFeatures(s2_dm_singlets)
+s2_dm_singlets <- ScaleData(s2_dm_singlets)
+s2_dm_singlets <- RunPCA(s2_dm_singlets, verbose = FALSE)
+ElbowPlot(s2_dm_singlets)
+s2_dm_singlets <- FindNeighbors(s2_dm_singlets, dims = 1:10)
+s2_dm_singlets <- FindClusters(s2_dm_singlets, resolution = 0.8, verbose = FALSE)
+s2_dm_singlets <- RunUMAP(s2_dm_singlets, dims = 1:10)
+DimPlot(s2_dm_singlets, label = TRUE) + ggtitle("Spike 2")
+
+if(save_output) {
+  saveRDS(s1_dm_singlets, file = here::here("processed_data/20211118_s1_mdm_singlets.rds"))
+  saveRDS(s2_dm_singlets, file = here::here("processed_data/20211118_s2_mdm_singlets.rds"))  
+}
+```

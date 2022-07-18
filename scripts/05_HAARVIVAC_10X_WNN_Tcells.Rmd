@@ -1,0 +1,289 @@
+---
+title: "HAARVIVAC 10X Weighted Nearest Neighbor Analysis"
+author: "Jolie Phan"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+date: "version `r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+Perform Weighted Nearest Neighbor Analysis on T cells.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(dplyr)
+library(stringr)
+library(Seurat)
+library(cowplot)
+library(ggplot2)
+library(ggpubr)
+library(ggbeeswarm)
+```
+
+# Load data
+
+```{r}
+save_output <- TRUE
+recluster <- TRUE
+if(recluster) {
+  s1 <- readRDS(file = here::here("processed_data/20220323_s1_tcells_only.rds"))
+  s2 <- readRDS(file = here::here("processed_data/20220323_s2_tcells_only.rds"))
+} else {
+  s1 <- readRDS(file = here::here("processed_data/20220323_s1_tcells_with_wnn.rds"))
+  s2 <- readRDS(file = here::here("processed_data/20220323_s2_tcells_with_wnn.rds"))
+}
+
+# Set colors
+s1_adt_colors <- c("CD4 T cells" = "#66C2A5",
+                   "CD8 T cells" = "#FC8D62")
+
+s2_adt_colors <- c("CD4 T cells" = "#1B9E77",
+                   "CD8 T cells" = "#D95F02")
+```
+
+# Preprocessing and dimensional reduction
+
+After subsetting, FindVariableFeatures, ScaleData, and RunPCA should be performed again.
+
+## Spike 1
+
+```{r}
+if(recluster) {
+ # RNA
+  DefaultAssay(s1) <- "RNA"
+  s1 <- FindVariableFeatures(s1) %>%
+    ScaleData() %>%
+    RunPCA(verbose = FALSE, reduction.key = "PCtcell_", reduction.name = "pca_tcell")
+
+  # ADT
+  DefaultAssay(s1) <- "ADT_bc"
+  VariableFeatures(s1) <- rownames(s1[["ADT_bc"]])
+  s1 <- ScaleData(s1) %>%
+    RunPCA(reduction.name = "apca_tcell", reduction.key = "APCtcell_") 
+}
+```
+
+## Spike 2
+
+```{r}
+if(recluster) {
+  # RNA
+  DefaultAssay(s2) <- "RNA"
+  s2 <- FindVariableFeatures(s2) %>%
+    ScaleData() %>%
+    RunPCA(verbose = FALSE, reduction.key = "PCtcell_", reduction.name = "pca_tcell")
+
+  # ADT
+  DefaultAssay(s2) <- "ADT_bc"
+  VariableFeatures(s2) <- rownames(s2[["ADT_bc"]])
+  s2 <- ScaleData(s2) %>%
+    RunPCA(reduction.name = "apca_tcell", reduction.key = "APCtcell_") 
+}
+```
+
+# Identify multimodal neighbors
+
+## Spike 1
+
+```{r, fig.width=6, fig.height=5}
+DefaultAssay(s1) <- "RNA"
+ElbowPlot(s1, reduction = "pca_tcell")
+```
+
+```{r, fig.width=6, fig.height=5}
+DefaultAssay(s1) <- "ADT_bc"
+ElbowPlot(s1, reduction = "apca_tcell")
+```
+
+```{r}
+if(recluster) {
+  s1 <- FindMultiModalNeighbors(s1, reduction.list = list("pca_tcell", "apca_tcell"),
+                                dims.list = list(1:8, 1:10),
+                                modality.weight.name = list("RNA.weight", "ADT.weight"))
+} 
+```
+
+## Spike 2
+
+```{r, fig.width=6, fig.height=5}
+DefaultAssay(s2) <- "RNA"
+ElbowPlot(s2, reduction = "pca_tcell")
+```
+
+```{r, fig.width=6, fig.height=5}
+DefaultAssay(s2) <- "ADT_bc"
+ElbowPlot(s2, reduction = "apca_tcell")
+```
+
+```{r, fig.width=6, fig.height=5}
+if(recluster) {
+  s2 <- FindMultiModalNeighbors(s2, reduction.list = list("pca_tcell", "apca_tcell"),
+                                dims.list = list(1:8, 1:10),
+                                modality.weight.name = list("RNA.weight", "ADT.weight"))
+} 
+```
+
+# Run UMAP on a weighted combo of RNA and ADT data
+
+## Spike 1
+
+```{r, fig.width=10, fig.height=4}
+if(recluster) {
+  s1 <- RunUMAP(s1, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+  s1 <- FindClusters(s1, graph.name = "wsnn", algorithm = 3, resolution = 1, verbose = FALSE)
+}
+
+p1 <- DimPlot(s1, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 4, pt.size = 0.7) + NoLegend() + ggtitle("Spike 1")
+p2 <- DimPlot(s1, reduction = 'wnn.umap', group.by = 'adt_clusters', label = FALSE, repel = TRUE, label.size = 4, cols = s1_adt_colors, pt.size = 0.7)
+p1 + p2
+```
+
+## Spike 2
+
+```{r, fig.width=10, fig.height=4}
+if(recluster){
+  s2 <- RunUMAP(s2, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+  s2 <- FindClusters(s2, graph.name = "wsnn", algorithm = 3, resolution = 1, verbose = FALSE)
+}
+
+p3 <- DimPlot(s2, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 4, pt.size = 0.7) + NoLegend() + ggtitle("Spike 2")
+p4 <- DimPlot(s2, reduction = 'wnn.umap', group.by = 'adt_clusters', label = FALSE, repel = TRUE, label.size = 4, cols = s2_adt_colors, pt.size = 0.7) 
+p3 + p4
+```
+
+## Spike 1 and 2 side by side 
+
+```{r, fig.width=9, fig.height=4}
+p1 + p3
+```
+
+# Visualize ADT expression
+
+Visualize the expression of a few lineage-defining ADT markers.
+
+## Spike 1
+
+```{r, fig.width=8, fig.height=6}
+DefaultAssay(s1) <- "ADT_bc"
+p5 <- FeaturePlot(s1, features = c("adt_CD3", "adt_CD4", "adt_CD8a", "adt_CD62L", "adt_CD25", "adt_HLA-DR"), reduction = "wnn.umap", ncol = 3)
+p5
+```
+
+## Spike 2
+
+```{r, fig.width=8, fig.height=6}
+DefaultAssay(s2) <- "ADT_bc"
+p6 <- FeaturePlot(s2, features = c("adt_CD3", "adt_CD4", "adt_CD8a", "adt_CD62L", "adt_CD25", "adt_HLA-DR"), reduction = "wnn.umap", ncol = 3)
+p6
+```
+
+# Visualize the modality weights that were learned for each cell
+
+## Spike 1
+
+```{r}
+VlnPlot(s1, features = "RNA.weight", sort = TRUE, pt.size = 0.1) + NoLegend()
+
+VlnPlot(s1, features = "ADT.weight", sort = TRUE, pt.size = 0.1) + NoLegend()
+```
+
+```{r}
+VlnPlot(s1, features = "RNA.weight", group.by = "adt_clusters", sort = TRUE, pt.size = 0.1, cols = s1_adt_colors) + NoLegend()
+
+VlnPlot(s1, features = "ADT.weight", group.by = "adt_clusters", sort = TRUE, pt.size = 0.1, cols = s1_adt_colors) + NoLegend()
+```
+
+## Spike 2
+
+```{r}
+VlnPlot(s2, features = "RNA.weight", sort = TRUE, pt.size = 0.1) + NoLegend()
+
+VlnPlot(s2, features = "ADT.weight", sort = TRUE, pt.size = 0.1) + NoLegend()
+```
+
+```{r}
+VlnPlot(s2, features = "RNA.weight", group.by = "adt_clusters", sort = TRUE, pt.size = 0.1, cols = s2_adt_colors) + NoLegend()
+
+VlnPlot(s2, features = "ADT.weight", group.by = "adt_clusters", sort = TRUE, pt.size = 0.1, cols = s2_adt_colors) + NoLegend()
+```
+
+# Dotplots
+
+Proportion of cells falling within each cluster per PTID.
+
+```{r}
+make_dotplots <- function(data, groups_to_compare, stim_for_title) {
+  clust_prop <- table(data$wsnn_res.1, data$Group, data$PTID) %>%
+    as.data.frame() %>%
+    filter(Freq != 0) %>%
+    filter(Var2 %in% groups_to_compare) %>%
+    group_by(Var3) %>%
+    mutate_at(.vars = "Freq", list(~./sum(.))) %>%
+    mutate(Pct = Freq*100) %>%
+    select(-Freq) %>%
+    dplyr::rename(Cluster = Var1) %>%
+    dplyr::rename(Group = Var2) %>%
+    dplyr::rename(PTID = Var3)
+  
+  clust_dotplot <- ggplot(clust_prop, aes(x = Group, y = Pct, fill = Group)) +
+    geom_signif(comparisons = list(c("Conv", "Naive")),
+              map_signif_level = TRUE,
+              test = "wilcox.test",
+              test.args = list(paired = FALSE),
+              textsize = 3,
+              vjust = -0.2) +
+    stat_summary(fun = median, geom = "crossbar", width = 0.3) +
+    geom_quasirandom(aes(fill = Group), pch = 21,
+                   width = 0.1, size = 1.5) +
+    facet_wrap(~Cluster, scale="free") +
+    ylab("% of T cells") +
+    theme(text = element_text(family = "Arial"),
+          axis.title.x = element_blank(),
+          legend.title = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          plot.margin = margin(0.3, 0.2, 0.1, 0.2, "cm"),
+          panel.grid = element_blank()) +
+    scale_fill_manual(values = c(Conv = "#E31A1C", Naive = "#1F78B4")) +
+    theme(legend.position="none") +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    ggtitle(stim_for_title) 
+}
+```
+
+## Spike 1
+
+```{r, fig.width=6, fig.height=7}
+s1_clust_dotplot <- make_dotplots(s1, groups_to_compare = c("Conv", "Naive"), stim_for_title = "Spike 1")
+
+s1_clust_dotplot
+```
+
+## Spike 2
+
+```{r, fig.width=6, fig.height=7}
+s2_clust_dotplot <- make_dotplots(s2, groups_to_compare = c("Conv", "Naive"), stim_for_title = "Spike 2")
+
+s2_clust_dotplot
+```
+
+# Save output
+
+```{r}
+if(save_output) {
+  saveRDS(s1, file = here::here("processed_data/20220323_s1_tcells_with_wnn.rds"))
+  saveRDS(s2, file = here::here("processed_data/20220323_s2_tcells_with_wnn.rds"))
+}
+```

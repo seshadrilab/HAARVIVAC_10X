@@ -1,0 +1,322 @@
+---
+title: "HAARVIVAC 10X Mixed Model"
+author: "Jolie Phan"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+date: "version `r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+The purpose of this analysis is to test associations between cluster and infection status, correcting for technical factors and other confounding covariates.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r, message=FALSE}
+library(lme4)
+library(readxl)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+library(ggh4x)
+```
+
+# Load data 
+
+```{r}
+save_output <- TRUE
+rerun_masc <- FALSE
+
+s1 <- readRDS(file = here::here("processed_data/20220413_s1_tcells_with_wnn_names.rds")) 
+s2 <- readRDS(file = here::here("processed_data/20220413_s2_tcells_with_wnn_names.rds"))
+metadata <- read_excel(here::here("data/2022_HAARVIVAC_SuppTable1.xlsx"), sheet = 1)
+
+# Subset data to drop Cluster 14 from S1 and Cluster 11 from S2
+s1 <- subset(s1, subset = wsnn_res.1 != "14")
+s2 <- subset(s2, subset = wsnn_res.1 != "11")
+
+if(!dir.exists(here::here("out/mixed_models"))) {
+    cat(sprintf("Creating folder %s\n", here::here("out/mixed_models")))
+    dir.create(here::here("out/mixed_models"), recursive = T)
+}
+```
+
+# Mixed model
+
+Covariate of interest: Group
+
+Random effects: PTID
+
+Fixed effects: nCount_RNA, nCount_ADT, percent.mt, sex, age
+
+First, get the necessary demographic information.
+
+```{r}
+metadata <- metadata %>%
+  select(PTID, Age, Sex)
+```
+
+## Spike 1
+
+```{r, fig.width=9, fig.height=6}
+# Get data frame 
+s1_df <- s1@meta.data %>%
+  select(PTID, nCount_RNA, nCount_ADT, percent.mt, Group, wsnn_res.1)
+s1_df <- inner_join(s1_df, metadata, by = "PTID")
+s1_df$Group <- factor(s1_df$Group, levels = c("Naive", "Conv"))
+s1_df$Sex <- factor(s1_df$Sex, levels = c("Female", "Male"))
+
+# Rescale UMIs
+s1_df$nCount_RNA <- scale(log2(s1_df$nCount_RNA))
+s1_df$nCount_ADT <- scale(log2(s1_df$nCount_ADT))
+
+# Create design matrix
+s1_cluster <- as.character(s1_df$wsnn_res.1)
+s1_designmat <- model.matrix(~ s1_cluster + 0, data.frame(cluster = s1_cluster))
+s1_df <- cbind(s1_designmat, s1_df)
+
+# Set variables
+contrast <- "Group"
+random <- "PTID"
+fixed <- c("nCount_RNA", "nCount_ADT", "percent.mt", "Age", "Sex")
+
+# Create base model formula
+formula_rhs <- paste0(c(paste0(fixed, collapse = " + "),
+                      paste0("(1|", random, ")", collapse = " + ")),
+                    collapse = " + ")
+
+# Initialize list to store model objects for each cluster
+s1_cluster_models <- vector(mode = "list",
+                         length = length(attributes(s1_designmat)$dimnames[[2]]))
+names(s1_cluster_models) <- attributes(s1_designmat)$dimnames[[2]]
+
+if(rerun_masc) {
+  # Run mixed-effects models for each cluster
+  system.time({
+    for (i in seq_along(colnames(s1_designmat))) {
+      test_cluster <- colnames(s1_designmat)[i]
+      null_formula <- as.formula(paste0(c(paste0(test_cluster, " ~ 1 + "),
+                                          formula_rhs), collapse = ""))
+      full_formula <- as.formula(paste0(c(paste0(test_cluster, " ~ ", contrast, " + "),
+                                          formula_rhs), collapse = ""))
+      # Run null and full mixed-effects models
+      null_model <- lme4::glmer(formula = null_formula, data = s1_df,
+                                family = binomial, nAGQ = 1, verbose = 0,
+                                control = glmerControl(optimizer = "bobyqa"))
+      full_model <- lme4::glmer(formula = full_formula, data = s1_df,
+                                family = binomial, nAGQ = 1, verbose = 0,
+                                control = glmerControl(optimizer = "bobyqa"))
+      
+      # Likelihood ratio test to test fixed effects
+      model_lrt <- anova(null_model, full_model)
+  
+      # Calculate confidence intervals for contrast term beta
+      contrast_lvl2 <- paste0(contrast, levels(s1_df[[contrast]])[2])
+      contrast_ci <- confint.merMod(full_model, method = "Wald",
+                                  parm = contrast_lvl2)
+  
+      # Save model objects to list
+      s1_cluster_models[[i]]$null_model <- null_model
+      s1_cluster_models[[i]]$full_model <- full_model
+      s1_cluster_models[[i]]$model_lrt <- model_lrt
+      s1_cluster_models[[i]]$confint <- contrast_ci
+      }  
+    })
+  
+  # Organize results into output dataframe
+  s1_output <- data.frame(cluster = attributes(s1_designmat)$dimnames[[2]],
+                          size = colSums(s1_designmat))
+  s1_output$model.pvalue <- sapply(s1_cluster_models, function(x) x$model_lrt[["Pr(>Chisq)"]][2])
+  s1_output$cluster <- s1_output$cluster %>%
+    str_replace("s1_cluster", "")
+  
+  # Get odds ratio for Conv vs. Naive
+  s1_output[[paste(contrast_lvl2, "OR", sep = ".")]] <- sapply(s1_cluster_models, function(x) exp(fixef(x$full)[[contrast_lvl2]]))
+  s1_output[[paste(contrast_lvl2, "OR", "95pct.ci.lower", sep = ".")]] <- sapply(s1_cluster_models, function(x) exp(x$confint[contrast_lvl2, "2.5 %"]))
+  s1_output[[paste(contrast_lvl2, "OR", "95pct.ci.upper", sep = ".")]] <- sapply(s1_cluster_models, function(x) exp(x$confint[contrast_lvl2, "97.5 %"]))
+  } else {
+    s1_output <- readRDS(file = here::here("out/mixed_models/S1_masc_output.rds"))
+}
+
+# Select significant points to highlight 
+s1_highlight <- s1_output %>%
+  dplyr::filter(-log10(model.pvalue) > -log10(0.05))
+
+# Visualize associations between infection status (Group) and WNN cluster
+s1_or_plot <- ggplot(data = s1_output, aes(x = GroupConv.OR, y = -log10(model.pvalue), label = cluster)) +
+  theme_bw() + 
+  theme(axis.title.x = element_text(size = 9),
+        axis.title.y = element_text(size = 9), 
+        axis.text.x = element_text(color = "black", size = 9),
+        axis.text.y = element_text(color = "black", size = 9),
+        plot.title = element_text(hjust = 0.5, size = 12),
+        plot.subtitle = element_text(size = 9),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        panel.grid = element_blank()) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "#196293") +
+  geom_errorbarh(aes(xmin=GroupConv.OR.95pct.ci.lower, xmax=GroupConv.OR.95pct.ci.upper), col = "darkgrey") +
+  geom_point(size = 2) + 
+  geom_point(data = s1_highlight, 
+             aes(x = GroupConv.OR, y = -log10(model.pvalue)), 
+             color = "#9D1213",
+             size = 2) +
+  geom_hline(yintercept = -log10(.05), linetype = "dashed", color = "#9D1213") + 
+  scale_x_log10(breaks = c(0.5, 1, 2, 4, 8)) +
+  geom_label_repel(size = 3) +
+  labs(title = "S1",
+       subtitle = "Naive                                                                                           Conv",
+       x = "Odds Ratio",
+       y = expression("-log"[10]*"(p-value)")) +
+  force_panelsizes(rows = unit(3, "in"),
+                     cols = unit(4, "in"))
+
+s1_or_plot
+```
+
+## Spike 2
+
+```{r, fig.width=9, fig.height=6}
+# Get data frame 
+s2_df <- s2@meta.data %>%
+  select(PTID, nCount_RNA, nCount_ADT, percent.mt, Group, wsnn_res.1)
+s2_df <- inner_join(s2_df, metadata, by = "PTID")
+s2_df$Group <- factor(s2_df$Group, levels = c("Naive", "Conv"))
+s2_df$Sex <- factor(s2_df$Sex, levels = c("Female", "Male"))
+
+# Rescale UMIs
+s2_df$nCount_RNA <- scale(log2(s2_df$nCount_RNA))
+s2_df$nCount_ADT <- scale(log2(s2_df$nCount_ADT))
+
+# Create design matrix
+s2_cluster <- as.character(s2_df$wsnn_res.1)
+s2_designmat <- model.matrix(~ s2_cluster + 0, data.frame(cluster = s2_cluster))
+s2_df <- cbind(s2_designmat, s2_df)
+
+# Set variables
+contrast <- "Group"
+random <- "PTID"
+fixed <- c("nCount_RNA", "nCount_ADT", "percent.mt", "Age", "Sex")
+
+# Create base model formula
+formula_rhs <- paste0(c(paste0(fixed, collapse = " + "),
+                      paste0("(1|", random, ")", collapse = " + ")),
+                    collapse = " + ")
+
+# Initialize list to store model objects for each cluster
+s2_cluster_models <- vector(mode = "list",
+                         length = length(attributes(s2_designmat)$dimnames[[2]]))
+names(s2_cluster_models) <- attributes(s2_designmat)$dimnames[[2]]
+
+if(rerun_masc) {
+  # Run mixed-effects models for each cluster
+  system.time({
+    for (i in seq_along(colnames(s2_designmat))) {
+      test_cluster <- colnames(s2_designmat)[i]
+      null_formula <- as.formula(paste0(c(paste0(test_cluster, " ~ 1 + "),
+                                          formula_rhs), collapse = ""))
+      full_formula <- as.formula(paste0(c(paste0(test_cluster, " ~ ", contrast, " + "),
+                                          formula_rhs), collapse = ""))
+      
+      # Run null and full mixed-effects models
+      null_model <- lme4::glmer(formula = null_formula, data = s2_df,
+                                family = binomial, nAGQ = 1, verbose = 0,
+                                control = glmerControl(optimizer = "bobyqa"))
+      full_model <- lme4::glmer(formula = full_formula, data = s2_df,
+                                family = binomial, nAGQ = 1, verbose = 0,
+                                control = glmerControl(optimizer = "bobyqa"))
+      
+      # Likelihood ratio test to test fixed effects
+      model_lrt <- anova(null_model, full_model)
+  
+      # Calculate confidence intervals for contrast term beta
+      contrast_lvl2 <- paste0(contrast, levels(s2_df[[contrast]])[2])
+      contrast_ci <- confint.merMod(full_model, method = "Wald",
+                                    parm = contrast_lvl2)
+      
+      # Save model objects to list
+      s2_cluster_models[[i]]$null_model <- null_model
+      s2_cluster_models[[i]]$full_model <- full_model
+      s2_cluster_models[[i]]$model_lrt <- model_lrt
+      s2_cluster_models[[i]]$confint <- contrast_ci
+      }  
+    })
+  
+  # Organize results into output dataframe
+  s2_output <- data.frame(cluster = attributes(s2_designmat)$dimnames[[2]],
+                          size = colSums(s2_designmat))
+  s2_output$model.pvalue <- sapply(s2_cluster_models, function(x) x$model_lrt[["Pr(>Chisq)"]][2])
+  s2_output$cluster <- s2_output$cluster %>%
+    str_replace("s2_cluster", "")
+  
+  # Get odds ratio for Conv vs. Naive
+  s2_output[[paste(contrast_lvl2, "OR", sep = ".")]] <- sapply(s2_cluster_models, function(x) exp(fixef(x$full)[[contrast_lvl2]]))
+  s2_output[[paste(contrast_lvl2, "OR", "95pct.ci.lower", sep = ".")]] <- sapply(s2_cluster_models, function(x) exp(x$confint[contrast_lvl2, "2.5 %"]))
+  s2_output[[paste(contrast_lvl2, "OR", "95pct.ci.upper", sep = ".")]] <- sapply(s2_cluster_models, function(x) exp(x$confint[contrast_lvl2, "97.5 %"]))
+  } else {
+  s2_output <- readRDS(file = here::here("out/mixed_models/S2_masc_output.rds"))
+}
+
+# Select significant points to highlight 
+s2_highlight <- s2_output %>%
+  dplyr::filter(-log10(model.pvalue) > -log10(0.05))
+
+# Visualize associations between infection status (Group) and WNN cluster
+s2_or_plot <- ggplot(data = s2_output, aes(x = GroupConv.OR, y = -log10(model.pvalue), label = cluster)) +
+  theme_bw() + 
+  theme(axis.title.x = element_text(size = 9),
+        axis.title.y = element_text(size = 9), 
+        axis.text.x = element_text(color = "black", size = 9),
+        axis.text.y = element_text(color = "black", size = 9),
+        plot.title = element_text(hjust = 0.5, size = 12),
+        plot.subtitle = element_text(size = 9),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        panel.grid = element_blank()) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "#196293") +
+  geom_errorbarh(aes(xmin=GroupConv.OR.95pct.ci.lower, xmax=GroupConv.OR.95pct.ci.upper), col = "darkgrey") +
+  geom_point(size = 2) + 
+  geom_point(data = s2_highlight, 
+             aes(x = GroupConv.OR, y = -log10(model.pvalue)), 
+             color = "#9D1213",
+             size = 2) +
+  geom_hline(yintercept = -log10(.05), linetype = "dashed", color = "#9D1213") + 
+  scale_x_log10(breaks = c(0.25, 1, 4, 16, 64)) +
+  geom_label_repel(size = 3) +
+  labs(title = "S2",
+       subtitle = "Naive                                                                                          Conv",
+       x = "Odds Ratio",
+       y = expression("-log"[10]*"(p-value)")) +
+  force_panelsizes(rows = unit(3, "in"),
+                     cols = unit(4, "in"))
+
+s2_or_plot
+```
+
+# Save output
+
+```{r}
+if(save_output) {
+  saveRDS(s1_output, file = here::here("out/mixed_models/S1_masc_output.rds"))
+  
+  saveRDS(s2_output, file = here::here("out/mixed_models/S2_masc_output.rds"))
+  
+  cairo_pdf(file=here::here("out/mixed_models/S1_S2_mixed_models.pdf"), width=5, height=4,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(s1_or_plot)
+  print(s2_or_plot)
+  dev.off()
+}
+```

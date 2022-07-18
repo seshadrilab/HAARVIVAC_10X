@@ -1,0 +1,374 @@
+---
+title: "HAARVIVAC 10X TCR Clonotype Analysis"
+author: "Jolie Phan"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+    toc_depth: 4
+date: "version `r format(Sys.time(), '%B %d, %Y')`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+```{r}
+library(dplyr)
+library(Seurat)
+library(ggplot2)
+library(scRepertoire) # v1.4.0
+library(ggh4x)
+```
+
+# Load data
+
+```{r}
+save_output <- TRUE
+
+s1 <- readRDS(file = here::here("processed_data/20220413_s1_tcells_with_wnn_names.rds"))
+s2 <- readRDS(file = here::here("processed_data/20220413_s2_tcells_with_wnn_names.rds"))
+
+s1_contig <- read.csv(file = here::here("processed_data/TCR/s1_qc_filtered_contigs.csv"))
+s2_contig <- read.csv(file = here::here("processed_data/TCR/s2_qc_filtered_contigs.csv"))
+```
+
+# Process TCR data
+
+Demultiplex the samples to create a contig list.
+
+```{r}
+s1_contig_list <- split(s1_contig, s1_contig$PTID)
+s2_contig_list <- split(s2_contig, s2_contig$PTID)
+```
+
+Combine the contigs. As the output of Cell Ranger are quantifications of both the TCRa and TCRb chains, the next step is to create a single list object with the TCR genes (comprised of the VDJC genes) and CDR3 sequences by cell barcode. The output is a list of contig data frames that will be reduced to the reads associated with a single barcode.
+
+removeNA 
+
+* TRUE - this is a stringent filter to remove any cell barcode with an NA value in at least one of the chains 
+
+* FALSE - the default setting to include and incorporate cells with 1 NA value
+
+
+removeMulti 
+
+* TRUE - this is a stringent filter to remove any cell barcode with more than 2 immune receptor chains 
+
+* FALSE - the default setting to include and incorporate cells with > 2 chains
+
+
+filterMulti 
+
+* TRUE - Isolated the top 2 expressed chains in cell barcodes with multiple chains 
+
+* FALSE - the default setting to include and incorporate cells with > 2 chains
+
+Since the contig list has already been QC'd, all of the above arguments will just be set to FALSE.
+
+```{r}
+i1 <- grepl("H", names(s1_contig_list))
+i2 <- grepl("C", names(s1_contig_list))
+s1_group <- NULL
+s1_group[i1] <- "Naive"
+s1_group[i2] <- "Conv"
+
+i3 <- grepl("H", names(s2_contig_list))
+i4 <- grepl("C", names(s2_contig_list))
+s2_group <- NULL
+s2_group[i3] <- "Naive"
+s2_group[i4] <- "Conv"
+
+s1_combined <- combineTCR(s1_contig_list,
+                          samples = names(s1_contig_list), 
+                          ID = s1_group,
+                          cells = "T-AB",
+                          removeNA = FALSE,
+                          removeMulti = FALSE,
+                          filterMulti = FALSE
+                          )
+
+s2_combined <- combineTCR(s2_contig_list,
+                          samples = names(s2_contig_list), 
+                          ID = s2_group,
+                          cells = "T-AB",
+                          removeNA = FALSE,
+                          removeMulti = FALSE,
+                          filterMulti = FALSE
+                          )
+
+names(s1_combined) <- names(s1_combined) %>%
+  gsub("_Conv", "", .) %>%
+  gsub("_Naive", "", .)
+
+names(s2_combined) <- names(s2_combined) %>%
+  gsub("_Conv", "", .) %>%
+  gsub("_Naive", "", .)
+```
+
+# Attach contig info to Seurat object
+
+```{r}
+# Need to match barcodes between contig list and Seurat Object
+for (i in seq_along(s1_combined)) {
+    s1_combined[[i]] <- stripBarcode(s1_combined[[i]], 
+                            column = 1, connector = "_", num_connects = 3)
+}
+
+for (i in seq_along(s2_combined)) {
+    s2_combined[[i]] <- stripBarcode(s2_combined[[i]], 
+                            column = 1, connector = "_", num_connects = 3)
+}
+
+# Attach to Seurat Object 
+s1 <- combineExpression(s1_combined, s1, 
+            cloneCall="aa", groupBy = "sample", proportion = FALSE, 
+            cloneTypes = c(Singlet = 1, Medium = 5, Large = 1000),
+            filterNA = TRUE)
+
+s2 <- combineExpression(s2_combined, s2, 
+            cloneCall = "aa", groupBy = "sample", proportion = FALSE, 
+            cloneTypes = c(Singlet = 1, Medium = 5, Large = 1000),
+            filterNA = TRUE)
+
+# Assign bins
+s1$cloneType <- factor(s1$cloneType,
+                       levels = c("Large (5 < X <= 1000)",
+                                  "Medium (1 < X <= 5)",
+                                  "Singlet (0 < X <= 1)"))
+
+s2$cloneType <- factor(s2$cloneType,
+                       levels = c("Large (5 < X <= 1000)",
+                                  "Medium (1 < X <= 5)",
+                                  "Singlet (0 < X <= 1)"))
+```
+
+# Clonotype proportion by cluster
+
+Look at the proportion of cells by cluster assigned into specific frequency ranges.
+
+```{r}
+# Set colors
+plot_colors <- c("#C47071", "#E3D768", "#75A0BE")
+```
+
+## Spike 1
+
+```{r, fig.width=7, fig.height=5}
+# Extract data for plotting 
+s1_clonotype_clust <- s1@meta.data %>%
+  select(wsnn_res.1, cloneType) %>%
+  dplyr::filter(wsnn_res.1 != "14") %>%
+  group_by(wsnn_res.1, cloneType) %>%
+  summarise(count = n())
+
+# Make stacked bar graph
+p1 <- ggplot(s1_clonotype_clust, aes(x = reorder(wsnn_res.1, desc(wsnn_res.1)), y = count, fill = cloneType)) +
+  # geom_text(aes(wnn_clusters, total, label = total, fill = NULL), data = s1_total_clonotype_clust) +
+  geom_bar(position = "fill", stat = "identity") +
+  coord_flip()+
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(size = 9, color = "black"),
+        axis.text.y = element_text(size = 9, color = "black"),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        axis.line = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank(),
+        legend.position="bottom") +
+  guides(fill = guide_legend(title = "Frequency")) +
+  scale_fill_manual(values = plot_colors) +
+  labs(y = "Proportion",
+       title = "S1") +
+  force_panelsizes(rows = unit(3, "in"),
+                     cols = unit(4, "in"))
+
+p1
+```
+
+## Spike 2
+
+```{r, fig.width=7, fig.height=5}
+# Extract data for plotting
+s2_clonotype_clust <- s2@meta.data %>%
+  select(wsnn_res.1, cloneType) %>%
+  dplyr::filter(wsnn_res.1 != "11") %>%
+  group_by(wsnn_res.1, cloneType) %>%
+  summarise(count = n())
+
+# Make stacked bar graph
+p2 <- ggplot(s2_clonotype_clust, aes(x = reorder(wsnn_res.1, desc(wsnn_res.1)), y = count, fill = cloneType)) +
+  geom_bar(position = "fill", stat = "identity") +
+  coord_flip()+
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(size = 9, color = "black"),
+        axis.text.y = element_text(size = 9, color = "black"),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        axis.line = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank(),
+        legend.position="bottom") +
+  guides(fill = guide_legend(title = "Frequency")) +
+  scale_fill_manual(values = plot_colors) +
+  labs(y = "Proportion",
+       title = "S2") +
+  force_panelsizes(rows = unit(3, "in"),
+                     cols = unit(4, "in"))
+
+p2
+```
+
+# Clonotype proportion by Group
+
+Look at the proportion of cells by Naive vs Conv assigned into specific frequency ranges.
+
+## Spike 1
+
+```{r, fig.width=6, fig.height=5}
+# Extract data for plotting 
+s1_clonotype_group <- s1@meta.data %>%
+  select(Group, cloneType) %>%
+  group_by(Group, cloneType) %>%
+  summarise(count = n())
+
+# Make stacked bar graph
+p3 <- ggplot(s1_clonotype_group, aes(x = Group, y = count, fill = cloneType)) +
+  geom_bar(position = "fill", stat = "identity") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 9, color = "black"),
+        axis.text.y = element_text(size = 9, color = "black"),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        axis.line = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank()) +
+  guides(fill = guide_legend(title = "Frequency")) + 
+  scale_fill_manual(values = plot_colors) +
+  labs(y = "Proportion",
+       title = "Spike 1")
+
+p3
+```
+
+## Spike 2
+
+```{r, fig.width=6, fig.height=5}
+# Extract data for plotting
+s2_clonotype_group <- s2@meta.data %>%
+  select(Group, cloneType) %>%
+  group_by(Group, cloneType) %>%
+  summarise(count = n())
+
+# Make stacked bar graph
+p4 <- ggplot(s2_clonotype_group, aes(x = Group, y = count, fill = cloneType)) +
+  geom_bar(position = "fill", stat = "identity") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 9, color = "black"),
+        axis.text.y = element_text(size = 9, color = "black"),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        axis.line = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank()) +
+  guides(fill = guide_legend(title = "Frequency")) +
+  scale_fill_manual(values = plot_colors) +
+  labs(y = "Proportion",
+       title = "Spike 2")
+
+p4
+```
+
+# Clonotype proportion by Group and cluster
+
+## Spike 1
+
+```{r, fig.width=12, fig.height=9}
+# Extract data for plotting 
+s1_clonotype_data <- s1@meta.data %>%
+  select(wsnn_res.1, Group, cloneType) %>%
+  dplyr::filter(wsnn_res.1 != "14") %>%
+  group_by(wsnn_res.1, Group, cloneType) %>%
+  summarise(count = n())
+
+# Make stacked bar graph
+p5 <- ggplot(s1_clonotype_data, aes(x = Group, y = count, fill = cloneType)) +
+  geom_bar(position = "fill", stat = "identity") +
+  facet_wrap(~wsnn_res.1, scale = "free") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 9, color = "black"),
+        axis.text.y = element_text(size = 9, color = "black"), 
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        axis.line = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank()) +
+  guides(fill = guide_legend(title = "Frequency")) +
+  scale_fill_manual(values = plot_colors) +
+  labs(y = "Proportion",
+       title = "S1")
+
+p5
+```
+
+## Spike 2
+
+```{r, fig.width=12, fig.height=9}
+# Extract data for plotting 
+s2_clonotype_data <- s2@meta.data %>%
+  select(wsnn_res.1, Group, cloneType) %>%
+  dplyr::filter(wsnn_res.1 != "11") %>%
+  group_by(wsnn_res.1, Group, cloneType) %>%
+  summarise(count = n())
+
+# Make stacked bar graph
+p6 <- ggplot(s2_clonotype_data, aes(x = Group, y = count, fill = cloneType)) +
+  geom_bar(position = "fill", stat = "identity") +
+  facet_wrap(~wsnn_res.1, scale = "free") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12, hjust = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 9, color = "black"),
+        axis.text.y = element_text(size = 9, color = "black"),
+        axis.line.y.left = element_line(color = "black"),
+        axis.line.x.bottom = element_line(color = "black"),
+        axis.line = element_blank(),
+        panel.border = element_blank(),
+        panel.grid = element_blank()) +
+  guides(fill = guide_legend(title = "Frequency")) +
+  scale_fill_manual(values = plot_colors) +
+  labs(y = "Proportion",
+       title = "S2") 
+
+p6
+```
+
+# Save plots
+
+```{r}
+if(save_output) {
+  cairo_pdf(file=here::here("out/S1_S2_cluster_clonotype_prop.pdf"), width=8, height=5,
+        onefile = TRUE, bg = "transparent", family = "Arial") # default unit is inches, default font is Helvetica.
+  print(p1)
+  print(p2)
+  dev.off()
+}
+```
