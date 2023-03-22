@@ -80,9 +80,6 @@ s2 <- CreateSeuratObject(counts = s2_dat$`Gene Expression`, project = "HAARVIVAC
 s2[["ADT"]] <-  CreateAssayObject(counts = s2_ADT_counts)
 s2[["HTO"]] <-  CreateAssayObject(counts = s2_HTO_counts)
 Assays(s2)
-
-s1_start_count <- length(s1_dm$orig.ident)
-s2_start_count <- length(s2_dm$orig.ident)
 ```
 
 # Demultiplex cells based on HTO enrichment
@@ -98,6 +95,9 @@ s2 <- NormalizeData(s2, assay = "HTO", normalization.method = "CLR")
 # Demultiplex
 s1_dm <- MULTIseqDemux(s1, assay = "HTO", autoThresh = TRUE)
 s2_dm <- MULTIseqDemux(s2, assay = "HTO", autoThresh = TRUE)
+
+s1_start_count <- length(s1_dm$orig.ident)
+s2_start_count <- length(s2_dm$orig.ident)
 
 # Assign global classification
 i1 <- grepl("Hashtag", s1_dm@meta.data$MULTI_ID)
